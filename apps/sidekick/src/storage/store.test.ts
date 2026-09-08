@@ -82,6 +82,16 @@ function revertMigration14(database: DatabaseSync): void {
     DROP TABLE gas_wallet;
     DROP TABLE runtime_api_credentials;
     DROP TABLE current_member_history_recovery;
+    DROP INDEX IF EXISTS activity_chain_transactions;
+    DROP INDEX IF EXISTS activity_run_transactions;
+    DROP INDEX IF EXISTS activity_wallet_state;
+    DROP INDEX IF EXISTS activity_job_state;
+    DROP INDEX IF EXISTS activity_run_state;
+    DROP INDEX IF EXISTS observer_latest_stacks;
+    DROP INDEX IF EXISTS observer_latest_burn;
+    DROP INDEX IF EXISTS observer_latest_verified;
+    DROP INDEX IF EXISTS observer_latest_quarantine;
+    DROP INDEX IF EXISTS observer_terminal_payloads;
     ALTER TABLE chain_events DROP COLUMN occurred_at;
     ALTER TABLE chain_events DROP COLUMN evidence_level;
     ALTER TABLE reward_calculation_realizations DROP COLUMN evidence_level;
@@ -359,7 +369,7 @@ describe("Sidekick SQLite store", () => {
     const store = await memoryStore();
 
     expect(store.databaseStatus()).toEqual({
-      schemaVersion: 40,
+      schemaVersion: 41,
       journalMode: "memory",
       synchronous: 1,
       foreignKeys: true,
@@ -1498,7 +1508,7 @@ describe("Sidekick SQLite store", () => {
     expect((await stat(path)).mode & 0o777).toBe(0o600);
     expect((await stat(result.backupPath as string)).mode & 0o777).toBe(0o600);
     expect(result.store.databaseStatus()).toMatchObject({
-      schemaVersion: 40,
+      schemaVersion: 41,
       journalMode: "wal",
       synchronous: 2,
     });
@@ -1524,7 +1534,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(40);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(41);
     expect(upgraded.store.runtimeSettings.get()?.settings).toMatchObject({
       displayName: "Preserved through forward migrations",
     });
@@ -1607,7 +1617,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.schemaVersion()).toBe(40);
+    expect(upgraded.store.schemaVersion()).toBe(41);
     const inspection = new DatabaseSync(path, { readOnly: true });
     expect(
       inspection
@@ -1690,7 +1700,17 @@ describe("Sidekick SQLite store", () => {
       DROP TABLE gas_wallet;
       DROP TABLE current_member_history_recovery;
       DROP TABLE runtime_api_credentials;
-      ALTER TABLE chain_events DROP COLUMN occurred_at;
+      DROP INDEX IF EXISTS activity_chain_transactions;
+    DROP INDEX IF EXISTS activity_run_transactions;
+    DROP INDEX IF EXISTS activity_wallet_state;
+    DROP INDEX IF EXISTS activity_job_state;
+    DROP INDEX IF EXISTS activity_run_state;
+    DROP INDEX IF EXISTS observer_latest_stacks;
+    DROP INDEX IF EXISTS observer_latest_burn;
+    DROP INDEX IF EXISTS observer_latest_verified;
+    DROP INDEX IF EXISTS observer_latest_quarantine;
+    DROP INDEX IF EXISTS observer_terminal_payloads;
+    ALTER TABLE chain_events DROP COLUMN occurred_at;
       ALTER TABLE chain_events DROP COLUMN evidence_level;
       ALTER TABLE reward_calculation_realizations DROP COLUMN evidence_level;
       DROP TABLE local_node_authority;
@@ -1718,7 +1738,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(40);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(41);
 
     const postUpgrade = new DatabaseSync(path);
     postUpgrade.exec(`
@@ -1869,7 +1889,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(40);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(41);
     expect(upgraded.store.managerTrust.listAudit(principal)).toMatchObject([
       {
         transition: "gained",
@@ -2003,7 +2023,17 @@ describe("Sidekick SQLite store", () => {
       DROP TABLE gas_wallet;
       DROP TABLE current_member_history_recovery;
       DROP TABLE runtime_api_credentials;
-      ALTER TABLE chain_events DROP COLUMN occurred_at;
+      DROP INDEX IF EXISTS activity_chain_transactions;
+    DROP INDEX IF EXISTS activity_run_transactions;
+    DROP INDEX IF EXISTS activity_wallet_state;
+    DROP INDEX IF EXISTS activity_job_state;
+    DROP INDEX IF EXISTS activity_run_state;
+    DROP INDEX IF EXISTS observer_latest_stacks;
+    DROP INDEX IF EXISTS observer_latest_burn;
+    DROP INDEX IF EXISTS observer_latest_verified;
+    DROP INDEX IF EXISTS observer_latest_quarantine;
+    DROP INDEX IF EXISTS observer_terminal_payloads;
+    ALTER TABLE chain_events DROP COLUMN occurred_at;
       ALTER TABLE chain_events DROP COLUMN evidence_level;
       ALTER TABLE reward_calculation_realizations DROP COLUMN evidence_level;
       DROP TABLE local_node_authority;
@@ -2026,7 +2056,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(40);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(41);
 
     const inspection = new DatabaseSync(path, { readOnly: true });
     const job = inspection
@@ -2074,7 +2104,17 @@ describe("Sidekick SQLite store", () => {
       DROP TABLE gas_wallet;
       DROP TABLE current_member_history_recovery;
       DROP TABLE runtime_api_credentials;
-      ALTER TABLE chain_events DROP COLUMN occurred_at;
+      DROP INDEX IF EXISTS activity_chain_transactions;
+    DROP INDEX IF EXISTS activity_run_transactions;
+    DROP INDEX IF EXISTS activity_wallet_state;
+    DROP INDEX IF EXISTS activity_job_state;
+    DROP INDEX IF EXISTS activity_run_state;
+    DROP INDEX IF EXISTS observer_latest_stacks;
+    DROP INDEX IF EXISTS observer_latest_burn;
+    DROP INDEX IF EXISTS observer_latest_verified;
+    DROP INDEX IF EXISTS observer_latest_quarantine;
+    DROP INDEX IF EXISTS observer_terminal_payloads;
+    ALTER TABLE chain_events DROP COLUMN occurred_at;
       ALTER TABLE chain_events DROP COLUMN evidence_level;
       ALTER TABLE reward_calculation_realizations DROP COLUMN evidence_level;
       DROP TABLE local_node_authority;

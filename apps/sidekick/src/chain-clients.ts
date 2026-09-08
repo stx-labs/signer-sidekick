@@ -692,7 +692,7 @@ function appendQuery(url: string, values: Readonly<Record<string, string | null>
   return parsed.toString();
 }
 
-function retryAfterMilliseconds(value: string | null, now = Date.now()): number | null {
+export function retryAfterMilliseconds(value: string | null, now = Date.now()): number | null {
   if (value === null) return null;
   if (/^[0-9]+$/.test(value)) return Number(value) * 1_000;
   if (!value.includes(",")) return null;
@@ -777,7 +777,7 @@ async function fetchJson<T>(
   fetchImpl: Fetch,
   url: string,
   schema: z.ZodType<T>,
-  request: RequestInit = {},
+  request: RequestInit & { retry?: boolean } = {},
 ): Promise<T> {
   const { response, cancellationSignal, endpoint } = await fetchResponse(fetchImpl, url, request);
   cancellationSignal?.throwIfAborted();
@@ -802,14 +802,15 @@ async function fetchJson<T>(
 async function fetchResponse(
   fetchImpl: Fetch,
   url: string,
-  request: RequestInit = {},
+  request: RequestInit & { retry?: boolean } = {},
 ): Promise<{
   response: Response;
   cancellationSignal: AbortSignal | undefined;
   endpoint: string;
 }> {
   const endpoint = sanitizedEndpoint(url);
-  const maxAttempts = 4;
+  const maxAttempts = request.retry === false ? 1 : 4;
+  const { retry: _retry, ...requestInit } = request;
   const interactiveSignal = currentInteractiveRequestSignal();
   const cancellationSignals = [request.signal, interactiveSignal].filter(
     (signal): signal is AbortSignal => signal !== null && signal !== undefined,
@@ -823,7 +824,7 @@ async function fetchResponse(
       const signals = [AbortSignal.timeout(10_000)];
       if (cancellationSignal) signals.push(cancellationSignal);
       response = await fetchImpl(url, {
-        ...request,
+        ...requestInit,
         signal: AbortSignal.any(signals),
       });
       upstreamRequestMetrics.record(url, request.method ?? "GET", response.status);
@@ -848,7 +849,12 @@ async function fetchResponse(
         // A short, explicit retry is useful for long paginated reconciliations without turning an
         // interactive status request into a multi-second retry storm. Longer or unspecified
         // limits return immediately so OperatorService can serve its last-good observation.
-        if (retryAfterMs !== null && retryAfterMs <= 1_000 && attempt === 1) {
+        if (
+          retryAfterMs !== null &&
+          retryAfterMs <= 1_000 &&
+          attempt === 1 &&
+          attempt < maxAttempts
+        ) {
           await cancelResponse(response);
           await sleep(retryAfterMs, cancellationSignal);
           continue;
@@ -1088,15 +1094,17 @@ export class StacksApiClient {
     this.headers = apiKey ? { [apiKeyHeader]: apiKey } : undefined;
   }
 
-  getNodeInfo(options: { signal?: AbortSignal } = {}): Promise<NodeInfo> {
+  getNodeInfo(options: { signal?: AbortSignal; retry?: boolean } = {}): Promise<NodeInfo> {
     return fetchJson(this.fetchImpl, `${this.baseUrl}/v2/info`, nodeInfoSchema, {
+      ...(options.retry === false ? { retry: false } : {}),
       ...(this.headers ? { headers: this.headers } : {}),
       ...(options.signal ? { signal: options.signal } : {}),
     });
   }
 
-  getStatus(options: { signal?: AbortSignal } = {}): Promise<ApiStatus> {
+  getStatus(options: { signal?: AbortSignal; retry?: boolean } = {}): Promise<ApiStatus> {
     return fetchJson(this.fetchImpl, `${this.baseUrl}/extended/v1/status`, apiStatusSchema, {
+      ...(options.retry === false ? { retry: false } : {}),
       ...(this.headers ? { headers: this.headers } : {}),
       ...(options.signal ? { signal: options.signal } : {}),
     });

@@ -14,6 +14,7 @@ import {
 } from "../reward-calibration.js";
 import type { RewardForecastObservation } from "../reward-forecast.js";
 import { TransactionEngineRepository } from "../transaction-engine/repository.js";
+import { ActivityReadRepository } from "./activity-read-repository.js";
 import {
   type ChainCursorInput,
   ChainStateRepository,
@@ -1680,6 +1681,7 @@ function toSignerStakerRun(row: unknown): SignerStakerRun {
 }
 
 export class SidekickStore {
+  readonly activity: ActivityReadRepository;
   readonly transactionEngine: TransactionEngineRepository;
   readonly walletIntents: WalletIntentRepository;
   readonly healthMonitoring: HealthMonitoringRepository;
@@ -1694,6 +1696,7 @@ export class SidekickStore {
   readonly sbtcWithdrawalCompletions: SbtcWithdrawalCompletionRepository;
 
   constructor(private readonly db: DatabaseSync) {
+    this.activity = new ActivityReadRepository(db);
     this.transactionEngine = new TransactionEngineRepository(db);
     this.walletIntents = new WalletIntentRepository(db);
     this.healthMonitoring = new HealthMonitoringRepository(db);

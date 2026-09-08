@@ -138,4 +138,14 @@ export class ChainStateRepository {
       updatedAt: value.updated_at,
     };
   }
+
+  /** Changes in synchronization coverage/anchor, excluding routine last-checked timestamps. */
+  coverageKey(sourceId: string): string {
+    return JSON.stringify(
+      this.db
+        .prepare(`SELECT stream, cursor, last_block_height, last_index_block_hash
+      FROM chain_cursors WHERE source_id = ? ORDER BY stream`)
+        .all(sourceId),
+    );
+  }
 }

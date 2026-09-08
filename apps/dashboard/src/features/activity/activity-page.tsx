@@ -497,7 +497,9 @@ function ActivityFeed({
         </div>
         {data && historyGroups.length === 0 ? (
           <div className="card activity-empty">
-            No operator or verified chain activity matches these filters.
+            {data.nextCursor
+              ? "No matches on this page. Choose Next to search older history."
+              : "No operator or verified chain activity matches these filters."}
           </div>
         ) : null}
         {historyGroups.map((group) => (

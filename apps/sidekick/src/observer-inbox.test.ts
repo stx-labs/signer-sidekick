@@ -61,6 +61,77 @@ function node(
 }
 
 describe("observer inbox verification", () => {
+  it("invalidates retained diagnostics on every delivery transition and preserves dedup/markers after pruning", async () => {
+    const { store } = await openSidekickStore(":memory:");
+    try {
+      const read = vi.spyOn(
+        store.observerInbox as unknown as { readStatus(): unknown },
+        "readStatus",
+      );
+      expect(store.observerInbox.status().queueDepth).toBe(0);
+      store.observerInbox.status().queueDepth = 999;
+      expect(store.observerInbox.status().queueDepth).toBe(0);
+      expect(read).toHaveBeenCalledTimes(1);
+      const input = {
+        endpointKind: "new-block" as const,
+        contentSha256: "bb".repeat(32),
+        rawPayloadJson: "{}",
+        payloadBytes: 2,
+        state: "observer-claimed" as const,
+        stateReason: null,
+        claimedBlockHeight: 100,
+        claimedBlockHash: ancestorBlockHash,
+        claimedIndexBlockHash: ancestorIndexBlockHash,
+        claimedBurnBlockHeight: null,
+        claimedBurnBlockHash: null,
+        receivedAt: firstObservedAt,
+      };
+      const accepted = store.observerInbox.acceptDelivery(input);
+      expect(store.observerInbox.status().queueDepth).toBe(1);
+      store.observerInbox.claimNextDelivery(processedAt);
+      expect(store.observerInbox.status().processing).toBe(1);
+      store.observerInbox.retryDelivery({
+        deliveryId: accepted.deliveryId,
+        reason: "unavailable",
+        retriedAt: processedAt,
+        nextAttemptAt: "2026-08-13T12:00:02.000Z",
+      });
+      expect(store.observerInbox.status()).toMatchObject({ queueDepth: 1, processing: 0 });
+      store.observerInbox.claimNextDelivery("2026-08-13T12:00:02.000Z");
+      store.observerInbox.recoverDeliveries("2026-08-13T12:00:03.000Z");
+      expect(store.observerInbox.status()).toMatchObject({ queueDepth: 1, processing: 0 });
+      store.observerInbox.claimNextDelivery("2026-08-13T12:00:04.000Z");
+      store.observerInbox.finishDelivery({
+        deliveryId: accepted.deliveryId,
+        state: "node-verified",
+        reason: "verified",
+        completedAt: "2026-08-13T12:00:05.000Z",
+      });
+      expect(store.observerInbox.status()).toMatchObject({
+        nodeVerified: 1,
+        queueDepth: 0,
+        processing: 0,
+      });
+      store.observerInbox.prunePayloads("2026-08-15T12:00:00.000Z");
+      expect(store.observerInbox.status()).toMatchObject({
+        prunedPayloads: 1,
+        uniqueDeliveries: 1,
+        lastVerifiedStacksBlock: { height: 100 },
+      });
+      expect(
+        store.observerInbox.acceptDelivery({ ...input, receivedAt: "2026-08-15T12:00:01.000Z" })
+          .duplicate,
+      ).toBe(true);
+      expect(store.observerInbox.status()).toMatchObject({
+        duplicates: 1,
+        uniqueDeliveries: 1,
+        nodeVerified: 1,
+        lastVerifiedStacksBlock: { height: 100 },
+      });
+    } finally {
+      store.close();
+    }
+  });
   it("promotes a callback only after its node block equals the canonical block at that height", async () => {
     const getInfo = vi.fn(async () => stableNodeInfo);
     const getTenureInfo = vi.fn(async () => stableTenureInfo);

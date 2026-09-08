@@ -364,11 +364,14 @@ export class ObserverReconciliationScheduler {
         stacksHeight: delivery.claimedBlockHeight,
         callbackReceivedAt: delivery.firstReceivedAt,
       };
-      this.request("current", anchor);
+      const managerPrint = containsContractPrint(delivery, this.#managerPrincipal);
+      // Empty callbacks only ask for the normal display cadence, not a fresh height fence.
+      // Relevant contract events keep the expedited path. This is never a signing preflight.
+      this.request("current", managerPrint ? anchor : {});
       // Stacks Core posts /new_block for every anchored block once an observer is registered,
       // even when this observer's filtered event list is empty. Treat the untrusted body only as
       // a cheap trigger hint; API content plus the local transaction index remain the witnesses.
-      if (containsContractPrint(delivery, this.#managerPrincipal)) {
+      if (managerPrint) {
         this.request("manager-activity", anchor);
       }
       const pox5ContractId = this.#getPox5ContractId();
@@ -376,9 +379,11 @@ export class ObserverReconciliationScheduler {
         pox5ContractId &&
         containsRelevantPox5Print(delivery, pox5ContractId, this.#managerPrincipal)
       ) {
+        this.request("current", anchor);
         this.request("roster", anchor);
       }
       if (pox5ContractId && containsPox5RewardCalculationPrint(delivery, pox5ContractId)) {
+        this.request("current", anchor);
         this.request("rewards", anchor);
       }
       return;

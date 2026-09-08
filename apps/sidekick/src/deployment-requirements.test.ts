@@ -132,6 +132,41 @@ function check(result: DeploymentRequirements, id: string) {
 }
 
 describe("deployment requirements", () => {
+  it("ignores routine heights/timestamps but refreshes after one minute and credential changes", async () => {
+    let clock = new Date("2026-08-15T12:00:00.000Z");
+    let currentConfig = { ...config };
+    let connection = structuredClone(connected);
+    let inbox = observer();
+    const probe = vi.fn(async () => "enabled" as const);
+    const requirements = new DeploymentRequirementsService({
+      getConfig: () => currentConfig,
+      getConnection: () => connection,
+      getObserverStatus: () => inbox,
+      probeTransactionIndex: probe,
+      testSource: async () => ({ status: "connected", signals: 1 }),
+      now: () => clock,
+    });
+    await requirements.check();
+    clock = new Date(clock.getTime() + 30_000);
+    connection = { ...connection, checkedAt: clock.toISOString() };
+    inbox = observer();
+    if (inbox.inbox.lastVerifiedStacksBlock) inbox.inbox.lastVerifiedStacksBlock.height += 50;
+    await requirements.check();
+    expect(probe).toHaveBeenCalledTimes(1);
+    clock = new Date(clock.getTime() + 30_000);
+    await requirements.check();
+    expect(probe).toHaveBeenCalledTimes(2);
+    currentConfig = {
+      ...config,
+      hiroReferenceApiKey: "rotated",
+      hiroReferenceApiKeyOrigin: config.hiroReferenceApiUrl,
+    };
+    await requirements.check();
+    expect(probe).toHaveBeenCalledTimes(3);
+    connection = { ...connection, status: "blocked", outcomeCode: "deployment-identity-mismatch" };
+    expect((await requirements.check()).status).toBe("blocked");
+    expect(probe).toHaveBeenCalledTimes(3);
+  });
   it("reports a ready deployment from bounded live checks", async () => {
     const result = await service().check(true);
 

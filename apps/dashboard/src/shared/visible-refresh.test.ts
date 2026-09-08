@@ -2,16 +2,37 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { startVisibleRefresh } from "./visible-refresh.js";
 
 describe("visible resource refresh", () => {
+  it("spaces focus work while keeping explicit refresh immediate", async () => {
+    const random = vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const run = vi.fn().mockResolvedValue(undefined);
+    const loop = startVisibleRefresh(run, vi.fn());
+    await vi.advanceTimersByTimeAsync(0);
+    window.dispatchEvent(new Event("focus"));
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(299);
+    expect(run).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(run).toHaveBeenCalledTimes(2);
+    window.dispatchEvent(new Event("focus"));
+    await loop.refresh();
+    expect(run).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(run).toHaveBeenCalledTimes(3);
+    loop.stop();
+    random.mockRestore();
+  });
   let document: EventTarget & { visibilityState: string };
   let window: EventTarget;
   beforeEach(() => {
     vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
     document = Object.assign(new EventTarget(), { visibilityState: "visible" });
     window = new EventTarget();
     vi.stubGlobal("document", document);
     vi.stubGlobal("window", window);
   });
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.useRealTimers();
     vi.unstubAllGlobals();
   });
@@ -76,7 +97,7 @@ describe("visible resource refresh", () => {
     expect(run).toHaveBeenCalledTimes(1);
     document.visibilityState = "visible";
     document.dispatchEvent(new Event("visibilitychange"));
-    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(300);
     expect(run).toHaveBeenCalledTimes(2);
     loop.stop();
     window.dispatchEvent(new Event("focus"));

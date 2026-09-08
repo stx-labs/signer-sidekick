@@ -403,6 +403,7 @@ export class RewardRunService {
   #nextObservationAt = 0;
   readonly #reconciliationCadence = new SubmittedObservationCadence();
   #closed = false;
+  readonly #waitingReasons = new Map<string, string>();
 
   constructor(options: RewardRunServiceOptions) {
     this.#options = options;
@@ -1264,6 +1265,7 @@ export class RewardRunService {
   async #guardedTick(runId: string): Promise<void> {
     try {
       await this.#tick(runId);
+      this.#waitingReasons.delete(runId);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       const current = this.#options.repository.get(runId);
@@ -1278,12 +1280,16 @@ export class RewardRunService {
         !submissionMayHaveStarted &&
         isRetryableChainReadError(error)
       ) {
-        this.#options.logger?.warn(
-          `Reward run ${runId} is waiting for upstream recovery: ${reason}`,
-        );
+        if (this.#waitingReasons.get(runId) !== reason) {
+          this.#options.logger?.warn(
+            `Reward run ${runId} is waiting for upstream recovery: ${reason}`,
+          );
+          this.#waitingReasons.set(runId, reason);
+        }
         return;
       }
       if (current?.status === "running") this.#halt(current, reason);
+      this.#waitingReasons.delete(runId);
       this.#options.logger?.warn(`Reward run ${runId} halted: ${reason}`);
     }
   }

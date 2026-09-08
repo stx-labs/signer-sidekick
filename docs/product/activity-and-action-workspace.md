@@ -275,12 +275,20 @@ History uses opaque cursor pagination ordered by meaningful timestamp and stable
 cursor is bound to a hash of the active filters so it cannot be reused with a different query.
 Active work is returned separately and is not paginated with terminal history.
 
-The read model always loads all active wallet-intent and engine authority
-records, while terminal source histories are bounded to the newest 10,000 records per authority.
-Crossing a terminal window marks that source's coverage `delayed`; it must never return a 503 or
-silently imply that active work is absent. Complete cursor reachability beyond that window requires
-source-aware repository pagination or a rebuildable materialized projection and remains a gate
-before claiming unbounded production history.
+The read model queries existing authority tables for active work; Overview uses that active-only
+path without loading terminal history. A defensive 10,000-active-record bound refuses an incomplete
+active set rather than silently omitting work. Terminal history has no 10,000-record window:
+SQLite selects timestamp/ID keys first, grouping a transaction's events and resolving operation
+ownership before the page boundary, then the existing constructors hydrate only requested groups.
+No second persisted Activity projection or repair process is introduced.
+
+Each history request hydrates at most 200 groups. A selective domain/search filter can therefore
+return fewer matches, including an empty page, with a continuation cursor. **Next** continues the
+search through older history; an empty page with a cursor does not mean there are no older matches.
+SQL may still scan relevant index keys to group and sort; the bound is on decoded group hydration,
+not a claim of constant database work at every history size. Detail views retain full evidence for
+their selected operation or transaction. Indexed-history coverage still describes ingestion and
+interpretation, independently of how many pages have been viewed.
 
 Filters are encoded in the `#activity` query string so the page can be bookmarked. Detail routes
 return to the preserved filter state.

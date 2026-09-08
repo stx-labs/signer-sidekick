@@ -1054,6 +1054,28 @@ test("renders every operator screen without leaking the credential", async ({ pa
   expect(overflow).toBeLessThanOrEqual(1);
 });
 
+test("continues an empty bounded Activity search page into older matches", async ({ page }) => {
+  await page.route("**/api/v1/activity?*", async (route) => {
+    const url = new URL(route.request().url());
+    const fixture = responseFor(route.request().url()) as Record<string, unknown>;
+    await route.fulfill(
+      fixtureFulfillment(
+        url.searchParams.has("cursor")
+          ? { ...fixture, active: [], nextCursor: null }
+          : { ...fixture, active: [], items: [], nextCursor: "older-page" },
+      ),
+    );
+  });
+  await login(page);
+  await openPage(page, "activity", "Activity");
+  await expect(
+    page.getByText("No matches on this page. Choose Next to search older history."),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Next", exact: true }).click();
+  await expect(page.getByText("Staker reward claimed", { exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Next", exact: true })).toBeDisabled();
+});
+
 test("shows active work and durable Activity evidence without horizontal overflow", async ({
   page,
 }) => {
@@ -1516,7 +1538,14 @@ for (const surface of ["overview", "rewards", "pool"] as const) {
     page,
   }) => {
     await page.clock.install();
-    if (surface !== "overview") await login(page);
+    if (surface !== "overview") {
+      await login(page);
+      // The Overview heading precedes its ledger effect. Finish that initial read before
+      // installing a delay/counter for the next screen's request to the same endpoint.
+      await expect(
+        page.locator("#overview-rewards").getByRole("link", { name: "Review payments" }),
+      ).toBeVisible();
+    }
     let release!: () => void;
     const held = new Promise<void>((done) => {
       release = done;

@@ -3,6 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { MANAGER_CLAIM_REWARDS_ADAPTER_ID } from "@stx-labs/signer-sidekick-protocol/manager-claim-rewards";
 import { ActivityProjectionService } from "./activity-projection.js";
+import { readBackgroundApiStatus } from "./background-api-health.js";
 import { deriveRewardCalculationTarget } from "./chain-anchor.js";
 import { captureChainAnchor, StacksApiClient, StacksNodeClient } from "./chain-clients.js";
 import {
@@ -300,6 +301,7 @@ export async function executeCliCommand({
         store,
         getOperatorContext: () => service.healthMonitoringContext(),
         getBurnBlocks: () => runtimeSettings.clients().api.getBurnBlockTimingHistory(),
+        getIndexedApiStatus: () => readBackgroundApiStatus(runtimeSettings.clients().api),
       });
       const staticDirectory = env.SIDEKICK_STATIC_DIRECTORY;
       let reportObserverInboxError: (error: unknown) => void = () => undefined;
@@ -494,7 +496,7 @@ export async function executeCliCommand({
           snapshotRefresh = startSnapshotRefreshLoop(
             {
               refreshSnapshot: async () => {
-                if (connection.current()?.status !== "connected") {
+                if ((await connection.check()).status !== "connected") {
                   throw new Error("The configured connection is not current");
                 }
                 return await service.refreshBackgroundSnapshot();

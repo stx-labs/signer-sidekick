@@ -1,5 +1,41 @@
 # Unreleased
 
+## Cheaper retained reads and background work (R4, combined remainder)
+
+- Overview reads active operation authorities without loading terminal Activity history. Activity
+  selects page keys in SQLite, then hydrates at most 200 historical groups per request. Older
+  history remains reachable beyond the former 10,000-record window. A selective search may return
+  an empty page with **Next**; transaction grouping and operation ownership precede pagination.
+- Health pages reuse the collector's published diagnosis. Observer diagnostics reuse unchanged
+  database results, and payload pruning skips the expensive retention pass while within the
+  existing limits. Callback receipt rows, deduplication markers and financial history are retained.
+  Full callback batches and history API pages yield to HTTP work between bounded batches.
+- Genuine no-op synchronization no longer discards warm projections. Replay, roster/coverage
+  changes, partial failures and reorgs still invalidate them. Ordinary changes retain explicitly
+  stale data during refresh; known noncanonical data is dropped. A pre-change in-flight load
+  cannot republish its old projection after invalidation.
+- Compatible indexed/comparison API status reads share a 30-second advisory observation with its
+  original timestamp. Endpoint, network and effective credentials determine sharing; different
+  credentials on the same host are not independent health witnesses. Advisory rate limits honor
+  bounded cooldowns, without nested client retries. Fresh preflight and transaction reads remain
+  uncached. Deployment capability checks no longer invalidate just because a height or check time
+  advanced; their existing one-minute expiry and explicit recheck remain.
+- Focus refreshes are coalesced and spread over 100–499 ms; initial/manual reads remain immediate.
+  The snapshot freshness gauge uses a 60-second generation-age budget, accommodating a 30-second
+  interval plus collection time. Snapshot maintenance consults the existing cached connection
+  assessor. Repeated run-wait warnings are logged on reason changes rather than every tick.
+- Support downloads use retained diagnostics and mark unobserved sections unavailable, without
+  starting live balance, connection, health or operator collection. Each asynchronous section has
+  a two-second collection bound. This is a last-known diagnostic export, not a fresh preflight.
+- Migration **41** adds read/retention indexes only. File-backed upgrades take the normal automatic
+  backup; older binaries refuse the newer schema, so rollback requires the matching older database
+  backup. No copied summary tables, receipt deletion, new scheduler, dependency change, signing
+  authority, completion-policy change or new infrastructure requirement is introduced.
+
+Local synthetic before/after and deterministic request budgets are review evidence, not a claim
+about whole-instance daily traffic or live browser latency. See the measurement procedure in
+[Operations](../operator/operations.md#local-read-performance-check).
+
 ## Bounded transaction observation (R4, first slice)
 
 - Active runs check broadcast receipts every 30 seconds instead of every five-second recovery

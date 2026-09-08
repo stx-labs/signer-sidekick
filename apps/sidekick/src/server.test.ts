@@ -795,9 +795,11 @@ describe("local API", () => {
       roster: [],
       alerts: [],
     }));
+    const freshSupportSnapshot = vi.fn(() => Promise.reject(new Error("must not collect")));
     const service = {
       snapshot: async () => ({}),
-      supportSnapshot,
+      supportSnapshot: freshSupportSnapshot,
+      storedSupportSnapshot: supportSnapshot,
       synchronize: async () => ({}),
     };
     const server = createServer({
@@ -851,7 +853,8 @@ describe("local API", () => {
       },
     });
     expect(response.body).not.toContain(token);
-    expect(supportSnapshot).toHaveBeenCalledWith(true);
+    expect(supportSnapshot).toHaveBeenCalledWith();
+    expect(freshSupportSnapshot).not.toHaveBeenCalled();
   });
 
   it("accepts the API key from an explicitly configured trusted proxy header", async () => {

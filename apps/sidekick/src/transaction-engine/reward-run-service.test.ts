@@ -1127,9 +1127,19 @@ describe("reward run coordinator", () => {
     // Recreate the previous schema and its parent-only unresolved diagnostic.
     const legacy = new DatabaseSync(path);
     legacy.exec(`
+      DROP INDEX IF EXISTS activity_chain_transactions;
+    DROP INDEX IF EXISTS activity_run_transactions;
+    DROP INDEX IF EXISTS activity_wallet_state;
+    DROP INDEX IF EXISTS activity_job_state;
+    DROP INDEX IF EXISTS activity_run_state;
+    DROP INDEX IF EXISTS observer_latest_stacks;
+    DROP INDEX IF EXISTS observer_latest_burn;
+    DROP INDEX IF EXISTS observer_latest_verified;
+    DROP INDEX IF EXISTS observer_latest_quarantine;
+    DROP INDEX IF EXISTS observer_terminal_payloads;
       ALTER TABLE transaction_run_children DROP COLUMN execution_source;
       ALTER TABLE gas_wallet_sweeps DROP COLUMN execution_source;
-      DELETE FROM schema_migrations WHERE version = 40;
+      DELETE FROM schema_migrations WHERE version >= 40;
       PRAGMA user_version = 39;
     `);
     legacy.close();

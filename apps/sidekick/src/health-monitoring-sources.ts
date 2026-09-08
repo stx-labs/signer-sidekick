@@ -1,8 +1,10 @@
 import { z } from "zod";
+import { RateLimitedError, UpstreamHttpError, UpstreamUnavailableError } from "./chain-clients.js";
 import {
   type ApiCredential,
   hiroReferenceApiCredential,
   indexedApiCredential,
+  indexedApiMatchesReference,
   type SidekickConfig,
 } from "./config.js";
 import { fetchHealthSource, HealthSourceError } from "./health-http.js";
@@ -75,9 +77,28 @@ function endpoint(base: string, path: string): string {
 
 function sourceFailure(error: unknown, checkedAt: string): SourceObservation {
   return {
+    ...((error instanceof RateLimitedError || error instanceof HealthSourceError) &&
+    error.retryAfterMs !== null &&
+    Number.isFinite(error.retryAfterMs) &&
+    error.retryAfterMs >= 0
+      ? { retryAfterMs: Math.min(300_000, error.retryAfterMs) }
+      : {}),
     reachable: false,
     latencyMs: null,
-    errorCode: error instanceof HealthSourceError ? error.code : "unexpected-content",
+    errorCode:
+      error instanceof HealthSourceError
+        ? error.code
+        : error instanceof RateLimitedError
+          ? "rate-limited"
+          : error instanceof UpstreamHttpError
+            ? error.status === 401
+              ? "authentication-required"
+              : error.status === 403
+                ? "authentication-rejected"
+                : "http-error"
+            : error instanceof UpstreamUnavailableError
+              ? "connection-failed"
+              : "unexpected-content",
     checkedAt,
   };
 }
@@ -270,14 +291,26 @@ export async function testHealthSource(
 export async function collectHealthObservation(
   config: SidekickConfig,
   observedAt: string,
-  options: { includeReferences?: boolean; previous?: HealthObservation | null } = {},
+  options: {
+    includeReferences?: boolean;
+    previous?: HealthObservation | null;
+    getIndexedApiStatus?: () => Promise<{ value: HiroStatus; checkedAt: string }>;
+  } = {},
 ): Promise<HealthObservation> {
   const includeReferences = options.includeReferences ?? true;
   const indexedCredential = indexedApiCredential(config);
   const referenceCredential = hiroReferenceApiCredential(config);
-  const configuredApiDistinct =
-    !config.hiroReferenceApiUrl ||
-    new URL(config.apiUrl).origin !== new URL(config.hiroReferenceApiUrl).origin;
+  const configuredApiDistinct = !indexedApiMatchesReference(config);
+  const indexedStatus =
+    includeReferences && options.getIndexedApiStatus
+      ? options
+          .getIndexedApiStatus()
+          .then(({ value, checkedAt }) => ({
+            value: hiroStatusSchema.parse(value),
+            source: { reachable: true, latencyMs: null, errorCode: null, checkedAt },
+          }))
+          .catch((error) => ({ source: sourceFailure(error, observedAt), value: null }))
+      : null;
   const [
     nodeRpc,
     nodeHealth,
@@ -310,7 +343,8 @@ export async function collectHealthObservation(
         }))
       : null,
     config.hiroReferenceApiUrl && includeReferences
-      ? readJson(
+      ? (!configuredApiDistinct && indexedStatus) ||
+        readJson(
           endpoint(config.hiroReferenceApiUrl, hiroStatusPath),
           hiroStatusSchema,
           observedAt,
@@ -320,7 +354,8 @@ export async function collectHealthObservation(
         ? { source: options.previous.hiroSource, value: options.previous.hiro }
         : null,
     configuredApiDistinct && includeReferences
-      ? readJson(
+      ? indexedStatus ||
+        readJson(
           endpoint(config.apiUrl, hiroStatusPath),
           hiroStatusSchema,
           observedAt,

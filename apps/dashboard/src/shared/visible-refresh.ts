@@ -8,9 +8,11 @@ export function startVisibleRefresh(
   let timer: ReturnType<typeof setTimeout> | undefined;
   let pending: Promise<void> | null = null;
   let again = false;
+  let focusScheduled = false;
   const schedule = (delay: number) => {
     clearTimeout(timer);
     timer = setTimeout(() => {
+      focusScheduled = false;
       void refreshIfVisible();
     }, delay);
   };
@@ -21,6 +23,7 @@ export function startVisibleRefresh(
       return pending;
     }
     clearTimeout(timer);
+    focusScheduled = false;
     pending = Promise.resolve()
       .then(() => (controller.signal.aborted ? undefined : run(controller.signal)))
       .then(() => undefined)
@@ -39,16 +42,23 @@ export function startVisibleRefresh(
     schedule(intervalMs);
     return Promise.resolve();
   };
-  document.addEventListener("visibilitychange", refreshIfVisible);
-  window.addEventListener("focus", refreshIfVisible);
+  const onFocus = () => {
+    if (document.visibilityState !== "visible" || pending || focusScheduled) return;
+    focusScheduled = true;
+    // Spread independent mounted resources over half a second on tab/window focus. Initial
+    // loads and explicit mutation refreshes remain immediate; repeated focus events coalesce.
+    schedule(100 + Math.floor(Math.random() * 400));
+  };
+  document.addEventListener("visibilitychange", onFocus);
+  window.addEventListener("focus", onFocus);
   void refresh();
   return {
     refresh,
     stop() {
       controller.abort();
       clearTimeout(timer);
-      document.removeEventListener("visibilitychange", refreshIfVisible);
-      window.removeEventListener("focus", refreshIfVisible);
+      document.removeEventListener("visibilitychange", onFocus);
+      window.removeEventListener("focus", onFocus);
     },
   };
 }

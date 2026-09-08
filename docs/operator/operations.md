@@ -30,6 +30,10 @@ is retried in the background, while `/health/live` and `/health/ready` remain av
 The database may contain API credentials; `gas-wallet.key` can spend its STX balance. Keep them as
 one restore set.
 
+Schema 41 adds Activity and observer read indexes without rewriting accounting or operation rows.
+File-backed migration takes the normal automatic pre-migration database backup. An older binary
+refuses schema 41; rollback requires its compatible database backup, not just an image change.
+
 ## Recovery and freshness
 
 A temporary node failure does not require a browser request or service restart to recheck the
@@ -38,6 +42,8 @@ up to five minutes. Operational worker startup is awaited and retried if it fail
 workers keep their existing lifecycles. A proved identity/network mismatch still blocks operations.
 Connection and snapshot backoffs can combine to roughly ten minutes, plus request/startup time.
 This is a timer bound after upstream recovery, not a guarantee that upstreams recover.
+Snapshot maintenance also consults the same cached assessor, so it can discover recovery on its
+own due pass without another timer. It does not bypass a proven identity/network refusal.
 
 Use each domain's evidence rather than one global "synced" timestamp:
 
@@ -52,10 +58,17 @@ Use each domain's evidence rather than one global "synced" timestamp:
   a healthy in-flight refresh is not proof the node is behind. Container readiness is not indexing
   completeness either.
 
+The freshness gauge's default generation-age budget is **60 seconds**, allowing the normal
+30-second refresh interval plus collection time. It does not reset timestamps or hide failures;
+use age, failures, in-progress and last-success metrics together when alerting.
+
 Visible Rewards, Pool and reward-run Settings refresh automatically and on focus. If a resource
 refresh fails, retained values stay on screen with a local error; payment history also offers a
 retry and reloads when reopened. A "Settings saved, but status refresh failed" notice means the
 write succeeded: retry observation, not the save.
+Focus-triggered reads are coalesced and spaced over 100–499 ms across mounted resources. Initial
+loads and explicit refreshes remain immediate. Genuine no-op history synchronization preserves
+warm data; changes/replay/coverage invalidate it, while a known reorg removes affected cached data.
 
 Prepared wallet transactions can be reopened from their action URL's `intentId` or Activity even
 when new-action eligibility changes. Viewing and verification remain available through a stale
@@ -200,3 +213,30 @@ docker compose logs --tail=200 sidekick
 For escalation, download the support bundle under **Settings → Support & security → Support &
 maintenance**. It includes Sidekick, node, signer, manager, pool, and operation evidence. It excludes
 credentials, private keys, signed transactions, environment dumps, and raw logs.
+
+The export uses already-retained operator, connection, health, capability and gas-wallet results.
+It does not trigger a new preflight or live balance/health probe. Sections that have not yet been
+observed are explicitly unavailable, and retained data keeps its own timestamps. Each asynchronous
+section has a two-second collection bound; a partial download is useful during an outage and is
+not evidence that every source is currently healthy.
+
+## Local read performance check
+
+After building the source checkout, run:
+
+```sh
+node scripts/benchmark-runtime-reads.mjs 20000
+```
+
+This creates and removes its own temporary SQLite fixture: 20,000 terminal callback receipts,
+20,000 chain events and two hours of health samples. It reports 30 warmed service-level p50/p95/max
+reads for Overview active work, Activity's first page, observer status and health status. No live
+node/API, production database, credentials or financial operation is involved. Use the same script,
+fixture size, runtime and hardware for before/after comparisons. This measures local service work,
+not HTTP serialization, browser usability, callback lag or whole-instance API calls per day.
+
+Receipt rows are not removed by this optimization: existing bounded raw-payload pruning preserves
+duplicate/conflicting-delivery detection and latest verified markers. Health/observer memoization,
+read indexes and cooperative yields address measured read cost without creating summary tables or
+another source of truth. Validate queue lag, source errors, HTTP latency and total upstream traffic
+on each instance separately after an approved deployment.

@@ -369,6 +369,26 @@ describe("Activity projection", () => {
     ).toThrowError(ActivityProjectionError);
   });
 
+  it("uses the same binary tie order for sorting and cursor continuation", () => {
+    const records = ["activity:a", "activity:A", "activity:0"].map((id) =>
+      record(summary(id, "complete", "succeeded")),
+    );
+    const context = { now, burnBlockHeight: null, rewardCycleId: null, phase: null };
+    let cursor: string | null = null;
+    const ids: string[] = [];
+    do {
+      const page = projectActivityPage({
+        records,
+        coverage: [sourceCoverage],
+        query: query({ limit: 1, cursor }),
+        context,
+      });
+      ids.push(...page.items.map(({ activityId }) => activityId));
+      cursor = page.nextCursor;
+    } while (cursor);
+    expect(ids).toEqual(["activity:0", "activity:A", "activity:a"]);
+  });
+
   it("keeps every closed Activity status reachable through its documented filter", () => {
     const records = [
       record(summary("activity:action", "action-required", "pending")),
@@ -581,6 +601,69 @@ describe("Activity projection", () => {
     expect(service.page(query({ domain: "pool", time: "24h" })).items).toEqual([]);
   });
 
+  it("groups transaction events and excludes an off-page owner before key pagination", async () => {
+    const store = await memoryStore();
+    const run = insertCompletedRewardRun(store);
+    store.chainState.upsertSource({
+      sourceId,
+      kind: "api",
+      network: "mainnet",
+      baseUrl: "https://api.mainnet.hiro.so",
+      observedAt: now.toISOString(),
+    });
+    const firstTx = `0x${"44".repeat(32)}`;
+    const secondTx = `0x${"55".repeat(32)}`;
+    for (const [txId, eventIndex, occurredAt] of [
+      [txid, 0, "2026-08-14T12:00:00.000Z"],
+      [firstTx, 0, "2026-08-14T12:00:00.000Z"],
+      [firstTx, 1, "2026-08-14T11:30:00.000Z"],
+      [secondTx, 0, "2026-08-14T11:45:00.000Z"],
+    ] as const) {
+      store.putChainEvent({
+        chainId: 1,
+        txId,
+        eventIndex,
+        occurredAt,
+        blockHeight: 8_750_000,
+        blockHash,
+        indexBlockHash,
+        microblockHash: null,
+        microblockSequence: null,
+        canonical: true,
+        microblockCanonical: true,
+        contractId: managerPrincipal,
+        topic: "print",
+        rawPayload: {},
+        decodedSchemaVersion: 1,
+        decodedPayload: {
+          event: { kind: "claim-staker-rewards", stakerPrincipal: actorPrincipal },
+        },
+        sourceId,
+        observedAt: now.toISOString(),
+      });
+    }
+    const service = new ActivityProjectionService({
+      store,
+      chainId: 1,
+      managerPrincipal,
+      sourceId: () => sourceId,
+      now: () => now,
+    });
+    let cursor: string | null = null;
+    const ids: string[] = [];
+    do {
+      const page = service.page(query({ limit: 1, cursor }));
+      ids.push(...page.items.map(({ activityId }) => activityId));
+      cursor = page.nextCursor;
+    } while (cursor);
+    expect(ids).toEqual([
+      `chain-tx:1:${secondTx}`,
+      `chain-tx:1:${firstTx}`,
+      `reward-run:${run.runId}`,
+    ]);
+    expect(service.detail(`chain-tx:1:${firstTx}`)?.timeline).toHaveLength(2);
+  });
+
   it("projects completed recipe runs as actions and resolves their transaction aliases", async () => {
     const store = await memoryStore();
     const run = insertCompletedRewardRun(store);
@@ -725,37 +808,21 @@ describe("Activity projection", () => {
 
     expect(service.page(query()).active).toHaveLength(1);
     expect(listLatestObservations).toHaveBeenCalledOnce();
-    expect(listAttemptsForActivity).toHaveBeenCalledOnce();
+    expect(listAttemptsForActivity).not.toHaveBeenCalled();
     expect(listObservations).not.toHaveBeenCalled();
     expect(listAttempts).not.toHaveBeenCalled();
   });
 
-  it("degrades bounded terminal coverage instead of failing the Activity page", () => {
-    const settingsAudit = Array.from({ length: 10_001 }, (_, index) => ({
-      revision: index + 1,
-      changedFields: ["dataSources.nodeRpcUrl"],
-      changedAt: new Date(now.getTime() - index * 1_000).toISOString(),
-    }));
-    const store = {
-      walletIntents: {
-        listForActivity: () => [],
-        listActiveForActivity: () => [],
-        listObservations: () => [],
-        listLatestObservationsForActivity: () => new Map(),
-      },
-      transactionEngine: {
-        listLogicalJobs: () => ({ items: [], nextCursor: null, total: 0 }),
-        listAttemptsForActivity: () => new Map(),
-      },
-      rewardRuns: {
-        listForActivity: () => [],
-      },
-      runtimeSettings: {
-        listAudit: () => settingsAudit,
-      },
-      listManagerActivityChainEvents: () => [],
-      chainState: { getCursor: () => null },
-    } as unknown as SidekickStore;
+  it("paginates all terminal history instead of truncating the newest 10000", async () => {
+    const store = await memoryStore();
+    for (let index = 0; index < 10_001; index += 1) {
+      store.runtimeSettings.put({
+        settings: {},
+        apiCredentials: {},
+        changedFields: ["dataSources.nodeRpcUrl"],
+        observedAt: new Date(now.getTime() - index * 1_000).toISOString(),
+      });
+    }
     const service = new ActivityProjectionService({
       store,
       chainId: 1,
@@ -763,18 +830,59 @@ describe("Activity projection", () => {
       sourceId: () => sourceId,
       now: () => now,
     });
-
-    const page = service.page(query());
-    expect(page.items).toHaveLength(50);
-    expect(page.items[0]?.coverage).toContainEqual(
-      expect.objectContaining({ source: "settings-audit", status: "current" }),
-    );
+    const history = vi.spyOn(store.activity, "historyKeys");
+    const detail = vi.spyOn(store.runtimeSettings, "getAudit");
+    expect(service.active().active).toEqual([]);
+    expect(history).not.toHaveBeenCalled();
+    expect(detail).not.toHaveBeenCalled();
+    const page = service.page(query({ type: "configuration", limit: 100 }));
+    expect(page.items).toHaveLength(100);
+    expect(detail).toHaveBeenCalledTimes(101);
     expect(page.coverage).toContainEqual(
       expect.objectContaining({
         source: "settings-audit",
-        status: "delayed",
-        reason: expect.stringContaining("newest 10000"),
+        status: "current",
+        reason: null,
       }),
     );
+    let cursor = page.nextCursor;
+    const ids = new Set(page.items.map(({ activityId }) => activityId));
+    while (cursor) {
+      const next = service.page(query({ type: "configuration", limit: 100, cursor }));
+      for (const { activityId } of next.items) {
+        expect(ids.has(activityId)).toBe(false);
+        ids.add(activityId);
+      }
+      cursor = next.nextCursor;
+    }
+    expect(ids.size).toBe(10_001);
+    expect(ids.has("settings:10001")).toBe(true);
+  }, 20_000);
+
+  it("bounds selective scans and returns a continuation even when a page has no matches", async () => {
+    const store = await memoryStore();
+    for (let index = 0; index < 205; index += 1) {
+      store.runtimeSettings.put({
+        settings: {},
+        apiCredentials: {},
+        changedFields: ["fee"],
+        observedAt: new Date(now.getTime() - index * 1_000).toISOString(),
+      });
+    }
+    const service = new ActivityProjectionService({
+      store,
+      chainId: 1,
+      managerPrincipal,
+      sourceId: () => sourceId,
+      now: () => now,
+    });
+    const detail = vi.spyOn(store.runtimeSettings, "getAudit");
+    const first = service.page(query({ search: "settings:205" }));
+    expect(first.items).toEqual([]);
+    expect(first.nextCursor).not.toBeNull();
+    expect(detail).toHaveBeenCalledTimes(200);
+    const last = service.page(query({ search: "settings:205", cursor: first.nextCursor }));
+    expect(last.items.map(({ activityId }) => activityId)).toEqual(["settings:205"]);
+    expect(last.nextCursor).toBeNull();
   });
 });

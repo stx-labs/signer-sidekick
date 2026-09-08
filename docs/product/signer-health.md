@@ -17,9 +17,23 @@ detailed signer-network exploration belongs in [Slotwatch](https://slotwatch.dev
 
 Sidekick polls cheap local node and signer endpoints every five seconds. Public/configured API
 references are refreshed every 30 seconds and back off to at least 60 seconds after a rate-limit
-response. Their original `checkedAt` time is retained between polls; reusing a reference sample
+response, honoring a finite Retry-After up to five minutes. Their original successful `checkedAt`
+time is retained between polls; reusing a reference sample
 never counts as an additional failure or independent source. Browser pages read the server-owned
 snapshot every 15 seconds while visible. Closing the browser does not stop collection.
+
+When indexed and comparison sources have the same endpoint and effective credentials, the
+collector shares the existing 30-second background API status read instead of issuing another
+request. Sharing is scoped to the runtime client (network, URL and credentials); it never caches
+fresh signing or canonical-evidence reads. Different credentials or base paths require separate
+availability reads, but the same origin still counts as only one network-comparison witness.
+The background advisory client disables nested retries and bounds rate-limit reuse to five minutes.
+
+GETs reuse the published diagnosis and original evidence timestamps; they do not recompute finding
+windows and database aggregates on every page poll. Collection publishes the next diagnosis,
+retains the last result on a transient failure, and cannot publish an old deployment's in-flight
+result under new settings. Database retention maintenance runs at most once every five minutes,
+not on every five-second collection. Evidence age remains visible; a cache hit is not a new sample.
 
 | Source | Role | Authority |
 | --- | --- | --- |

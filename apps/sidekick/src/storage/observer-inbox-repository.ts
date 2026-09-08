@@ -154,6 +154,12 @@ export interface ObserverInboxStatus {
 }
 
 export class ObserverInboxRepository {
+  private retainedStatus: {
+    revision: number;
+    dataVersion: number;
+    value: ObserverInboxStatus;
+  } | null = null;
+  private revision = 0;
   constructor(private readonly db: DatabaseSync) {}
 
   acceptDelivery(
@@ -163,6 +169,7 @@ export class ObserverInboxRepository {
       maximumPendingPayloadBytes: MAX_PENDING_OBSERVER_PAYLOAD_BYTES,
     },
   ): AcceptedObserverDelivery {
+    this.revision += 1;
     const value = observerDeliveryInputSchema.parse(input);
     const parsedLimits = z
       .object({
@@ -311,7 +318,8 @@ export class ObserverInboxRepository {
       this.db.exec("ROLLBACK");
       throw error;
     }
-    this.prunePayloads(value.receivedAt);
+    if (accepted.state !== "observer-claimed" && accepted.state !== "processing")
+      this.prunePayloads(value.receivedAt);
     return {
       deliveryId: accepted.delivery_id,
       duplicate: accepted.delivery_id !== proposedDeliveryId,
@@ -321,10 +329,22 @@ export class ObserverInboxRepository {
   }
 
   prunePayloads(observedAt: string): number {
+    this.revision += 1;
     const parsedObservedAt = z.iso.datetime().parse(observedAt);
     const cutoff = new Date(
       Date.parse(parsedObservedAt) - OBSERVER_RAW_PAYLOAD_RETENTION_MS,
     ).toISOString();
+    const retained = this.db
+      .prepare(`SELECT COUNT(*) AS count, COALESCE(SUM(payload_bytes), 0) AS bytes,
+      MIN(COALESCE(completed_at, updated_at)) AS oldest FROM observer_deliveries
+      WHERE state IN ('node-verified', 'quarantined', 'expired') AND payload_pruned = 0`)
+      .get() as { count: number; bytes: number; oldest: string | null };
+    if (
+      retained.count <= MAX_RETAINED_OBSERVER_RAW_PAYLOADS &&
+      retained.bytes <= MAX_RETAINED_OBSERVER_RAW_PAYLOAD_BYTES &&
+      (retained.oldest === null || retained.oldest >= cutoff)
+    )
+      return 0;
     const result = this.db
       .prepare(
         `WITH retained AS (
@@ -358,6 +378,7 @@ export class ObserverInboxRepository {
   }
 
   recoverDeliveries(recoveredAt: string): number {
+    this.revision += 1;
     const parsedRecoveredAt = z.iso.datetime().parse(recoveredAt);
     const result = this.db
       .prepare(
@@ -371,6 +392,7 @@ export class ObserverInboxRepository {
   }
 
   claimNextDelivery(claimedAt: string): StoredObserverDelivery | null {
+    this.revision += 1;
     const parsedClaimedAt = z.iso.datetime().parse(claimedAt);
     this.db.exec("BEGIN IMMEDIATE");
     try {
@@ -417,6 +439,7 @@ export class ObserverInboxRepository {
   }
 
   finishDelivery(input: ObserverDeliveryCompletion): void {
+    this.revision += 1;
     const deliveryId = z.string().uuid().parse(input.deliveryId);
     const state = z.enum(["node-verified", "quarantined", "expired"]).parse(input.state);
     const reason = z.string().min(1).max(500).parse(input.reason);
@@ -435,6 +458,7 @@ export class ObserverInboxRepository {
   }
 
   retryDelivery(input: ObserverDeliveryRetry): void {
+    this.revision += 1;
     const deliveryId = z.string().uuid().parse(input.deliveryId);
     const reason = z.string().min(1).max(500).parse(input.reason);
     const retriedAt = z.iso.datetime().parse(input.retriedAt);
@@ -455,6 +479,21 @@ export class ObserverInboxRepository {
   }
 
   status(): ObserverInboxStatus {
+    // Mutations on this connection invalidate synchronously; data_version detects writes from
+    // another connection. Repeated GETs do not aggregate the delivery history again.
+    const dataVersion = Number(this.db.prepare("PRAGMA data_version").get()?.data_version);
+    if (
+      this.retainedStatus?.revision === this.revision &&
+      this.retainedStatus.dataVersion === dataVersion
+    ) {
+      return structuredClone(this.retainedStatus.value);
+    }
+    const value = this.readStatus();
+    this.retainedStatus = { revision: this.revision, dataVersion, value };
+    return structuredClone(value);
+  }
+
+  private readStatus(): ObserverInboxStatus {
     const totals = z
       .object({
         unique_deliveries: z.number().int().nonnegative(),

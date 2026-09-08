@@ -62,7 +62,7 @@ describe("startSnapshotRefreshLoop", () => {
     const metrics = new SnapshotRefreshMetricsTracker(() => now);
     metrics.recordAttempt();
     metrics.recordSuccess({ generatedAt: new Date(now).toISOString() });
-    now += 30_001;
+    now += 60_001;
     metrics.recordAttempt();
     expect(metrics.snapshot()).toMatchObject({
       snapshotFresh: 0,

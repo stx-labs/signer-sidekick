@@ -360,6 +360,7 @@ export async function syncManagerEvents(
     });
     if (page.prev_cursor === null) break;
     cursor = page.prev_cursor;
+    await yieldToEventLoop();
   }
 
   // Reconcile only after the whole incremental window has been observed. Reconciling each page
@@ -390,3 +391,5 @@ export async function syncManagerEvents(
     stoppedAtKnownOverlap,
   };
 }
+
+import { setImmediate as yieldToEventLoop } from "node:timers/promises";

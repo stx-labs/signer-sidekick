@@ -140,6 +140,7 @@ interface OperatorSnapshotShape {
 interface OperatorSnapshotService {
   snapshot(force?: boolean): Promise<OperatorSnapshotShape>;
   supportSnapshot?(force?: boolean): Promise<OperatorSnapshotShape>;
+  storedSupportSnapshot?(): unknown;
   rewardLedger?(query?: {
     cycle?: number | null;
     distribution?: 1 | 2 | null;
@@ -197,6 +198,7 @@ interface OperatorSnapshotService {
 }
 
 interface ActivityProjectionApiService {
+  active?(readOnly?: boolean): ActivityResponse;
   page(query: ActivityQuery, readOnly?: boolean): ActivityResponse;
   detail(activityId: string, readOnly?: boolean): ActivityDetail | null;
 }
@@ -409,6 +411,7 @@ export interface ServerOptions {
 
 /** Gas wallet lifecycle surface (plan S2); public identity only, never key material. */
 export interface GasWalletApi {
+  storedStatus?(): GasWalletStatus | null;
   status(): Promise<GasWalletStatus>;
   create(): Promise<GasWalletStatus>;
   enable(): Promise<GasWalletStatus>;
@@ -2049,18 +2052,20 @@ export function createServer(options: ServerOptions = {}) {
           : Promise.resolve(null),
         activityProjection
           ? Promise.resolve().then(() =>
-              activityProjection.page(
-                {
-                  status: "all",
-                  type: "all",
-                  domain: "all",
-                  time: "all",
-                  search: null,
-                  cursor: null,
-                  limit: 1,
-                },
-                readOnly,
-              ),
+              activityProjection.active
+                ? activityProjection.active(readOnly)
+                : activityProjection.page(
+                    {
+                      status: "all",
+                      type: "all",
+                      domain: "all",
+                      time: "all",
+                      search: null,
+                      cursor: null,
+                      limit: 1,
+                    },
+                    readOnly,
+                  ),
             )
           : Promise.resolve(null),
       ]);
@@ -2098,34 +2103,28 @@ export function createServer(options: ServerOptions = {}) {
   server.get("/api/v1/support-bundle", async (_request, reply) => {
     const service = options.service;
     const operational = options.isOperational?.() !== false;
-    const connectionCurrent =
-      options.connection === undefined || options.connection.current()?.status === "connected";
     const application = options.supportApplication?.() ?? operatorSupportApplication();
     const healthService = options.health;
     const bundle = await createOperatorSupportBundle({
       application,
-      ...(options.connection ? { connection: async () => await options.connection?.check() } : {}),
+      timeoutMs: 2_000,
+      ...(options.connection ? { connection: () => options.connection?.current() } : {}),
       ...(options.deploymentRequirements
-        ? { deploymentRequirements: async () => await options.deploymentRequirements?.check() }
+        ? { deploymentRequirements: () => options.deploymentRequirements?.current() }
         : {}),
       ...(service?.settings ? { runtimeSettings: () => service.settings?.() } : {}),
       ...(service && operational
         ? {
-            operator: async () =>
-              service.supportSnapshot
-                ? service.supportSnapshot(connectionCurrent)
-                : service.summary
-                  ? service.summary(connectionCurrent)
-                  : service.snapshot(connectionCurrent),
+            operator: async () => service.storedSupportSnapshot?.() ?? null,
           }
         : {}),
       ...(healthService
         ? {
-            health: async () => healthService.storedSnapshot?.() ?? (await healthService.current()),
+            health: async () => healthService.storedSnapshot?.() ?? null,
           }
         : {}),
       ...(options.gasWallet && operational
-        ? { gasWallet: async () => await options.gasWallet?.status() }
+        ? { gasWallet: () => options.gasWallet?.storedStatus?.() ?? null }
         : {}),
       ...(options.engine && operational
         ? {

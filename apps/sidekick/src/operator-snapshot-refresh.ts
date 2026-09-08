@@ -79,7 +79,9 @@ export class SnapshotRefreshMetricsTracker {
 
   constructor(
     private readonly now: () => number = Date.now,
-    private readonly freshForMs = DEFAULT_SNAPSHOT_REFRESH_INTERVAL_MS,
+    // A collection can itself occupy most of the interval (about 27s on node-vm).
+    // Allow one collection plus one scheduled wait; failures/last-success remain separate.
+    private readonly freshForMs = 2 * DEFAULT_SNAPSHOT_REFRESH_INTERVAL_MS,
   ) {}
 
   recordAttempt(): void {

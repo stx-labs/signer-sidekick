@@ -226,6 +226,11 @@ export class GasWalletService {
     return await request;
   }
 
+  /** Last published public status only; exporting diagnostics must not read balances/roles. */
+  storedStatus(): GasWalletStatus | null {
+    return this.#statusCache?.value ?? null;
+  }
+
   async #buildStatus(now: Date): Promise<GasWalletStatus> {
     const stored = this.#options.store.gasWallet.get();
     const banners = this.#options.store.gasWallet.banners();
