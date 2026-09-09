@@ -4,8 +4,9 @@ services:
     network_mode: host
     ports: !reset []
     environment:
-      SIDEKICK_HTTP_HOST: 127.0.0.1
-      SIDEKICK_EVENT_HTTP_HOST: 127.0.0.1
+      SIDEKICK_HTTP_HOST: ${SIDEKICK_HTTP_HOST:-127.0.0.1}
+      SIDEKICK_HTTP_PORT: ${SIDEKICK_HTTP_PORT:-3998}
+      SIDEKICK_EVENT_HTTP_HOST: ${SIDEKICK_EVENT_HTTP_HOST:-127.0.0.1}
     healthcheck:
       test:
-        ["CMD", "node", "-e", "const host = process.env.SIDEKICK_HTTP_HOST || '127.0.0.1'; fetch('http://' + host + ':3998/health/live').then((response) => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1));"]
+        ["CMD", "node", "-e", "const host = process.env.SIDEKICK_HTTP_HOST || '127.0.0.1'; const port = process.env.SIDEKICK_HTTP_PORT || '3998'; fetch('http://' + host + ':' + port + '/health/live').then((response) => { if (!response.ok) process.exit(1); }).catch(() => process.exit(1));"]
