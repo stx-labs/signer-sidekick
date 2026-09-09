@@ -27,6 +27,7 @@ repository, fixtures, commands, screenshots, or support bundles.
 | `pnpm devnet:verify:offline` | Released-Devnet lock without network access |
 | `pnpm test:regtest:external` | Read-only smoke against a supplied PoX-5 network |
 | `pnpm test:container:external` | Production-container smoke against supplied endpoints |
+| `pnpm test:compose:smoke` | Compose published-port smoke with a non-default HTTP port |
 
 Install Chromium once before browser tests:
 
