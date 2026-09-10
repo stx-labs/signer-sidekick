@@ -63,8 +63,8 @@ WORKDIR /app
 VOLUME ["/data"]
 EXPOSE 3700 3998
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD ["node", "-e", "const host=process.env.SIDEKICK_HTTP_HOST || '127.0.0.1'; fetch('http://' + host + ':3998/health/live').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --start-interval=5s --retries=3 \
+  CMD ["node", "-e", "const configured=process.env.SIDEKICK_HTTP_HOST || '127.0.0.1'; const host=configured==='0.0.0.0'||configured==='::'?'127.0.0.1':configured; const port=process.env.SIDEKICK_HTTP_PORT || '3998'; fetch('http://' + host + ':' + port + '/health/live').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
 
 ENTRYPOINT ["node", "/app/dist/main.js"]
 CMD ["serve"]

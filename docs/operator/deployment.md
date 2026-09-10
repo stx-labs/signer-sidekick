@@ -110,6 +110,37 @@ the same database or gas wallet. Prefer Observe mode for initial checks.
 Use loopback only when both processes share a network namespace. On split hosts, use private
 addresses and restrict each listener to the listed source.
 
+### Changing ports
+
+The host port and the container port are configured separately:
+
+| Setting | Controls | Default |
+| --- | --- | --- |
+| `SIDEKICK_PUBLISH_ADDRESS` | Host address the dashboard is published on | `127.0.0.1` |
+| `SIDEKICK_PUBLISH_PORT` | Host port | Same as `SIDEKICK_HTTP_PORT` |
+| `SIDEKICK_HTTP_PORT` | Port Sidekick listens on inside the container | `3998` |
+
+`SIDEKICK_EVENT_PUBLISH_ADDRESS`, `SIDEKICK_EVENT_PUBLISH_PORT` and `SIDEKICK_EVENT_HTTP_PORT` do
+the same for the private event listener.
+
+Leave `SIDEKICK_HTTP_HOST` unset. On the default bridge network the container must listen on
+`0.0.0.0` for Docker to forward the published port; binding it to loopback leaves the published port
+unreachable. `compose.host-network.yaml` binds `127.0.0.1` instead, because host networking
+publishes no ports.
+
+To run a second instance on the same host, give it its own Compose project and host ports:
+
+```sh
+COMPOSE_PROJECT_NAME=sidekick-b \
+SIDEKICK_PUBLISH_PORT=4998 \
+SIDEKICK_EVENT_PUBLISH_PORT=3701 \
+docker compose up -d
+```
+
+The project name namespaces the data volume, so each instance keeps its own database and gas wallet
+at the default `/data` location and the container ports need not change. Never point two instances
+at one database or gas wallet.
+
 ## Event observer
 
 Generate the node configuration after `connection check` succeeds:
