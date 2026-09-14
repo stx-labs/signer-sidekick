@@ -8,6 +8,7 @@ import type {
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { encodeUIntHex } from "@stx-labs/signer-sidekick-protocol/clarity-codecs";
 import { BUILT_IN_NETWORK_COMPATIBILITY_PROFILES } from "@stx-labs/signer-sidekick-protocol/known-network-compatibility";
+import { BackgroundContractReads } from "./background-contract-reads.js";
 import { type ChainAnchor, deriveRewardCalculationTarget } from "./chain-anchor.js";
 import {
   captureChainAnchor,
@@ -528,6 +529,7 @@ export function buildAlerts(snapshot: {
 }
 
 export class OperatorService {
+  private readonly backgroundContractReads = new BackgroundContractReads(() => this.currentTime());
   private cached: {
     expiresAt: number;
     loadedAt: number;
@@ -691,6 +693,8 @@ export class OperatorService {
         return value;
       })
       .catch((error: unknown) => {
+        // Do not retain values that caused a higher-level decode/coherence failure.
+        if (background) this.backgroundContractReads.clear();
         this.lastRefreshFailure =
           error instanceof RateLimitedError ? "rate-limited" : "refresh-failed";
         if (error instanceof RateLimitedError) {
@@ -714,7 +718,7 @@ export class OperatorService {
   }
 
   private refreshInBackground(): void {
-    void this.refresh().catch(() => {
+    void this.refresh(true).catch(() => {
       // The stale snapshot remains the normal status response. A later refresh may recover.
     });
   }
@@ -1684,8 +1688,10 @@ export class OperatorService {
   private invalidateSynchronizedProjection(noncanonical: boolean): void {
     this.projectionRevision += 1;
     this.lastGoodRewards = null;
-    if (noncanonical) this.cached = null;
-    else if (this.cached) {
+    if (noncanonical) {
+      this.cached = null;
+      this.backgroundContractReads.clear();
+    } else if (this.cached) {
       this.cached.expiresAt = 0;
       this.cached.invalidated = true;
     }
@@ -1764,11 +1770,16 @@ export class OperatorService {
       projectionAnchor,
       preflight.pox.firstRewardCycleId,
     );
+    // Canonicality and live preflight above remain uncached. Rebuild all local projections even
+    // when immutable contract values at this exact roster anchor can be reused.
+    const projectionNode = background
+      ? this.backgroundContractReads.at(node, projectionAnchor.indexBlockHash)
+      : node;
     const forecast =
       manager.attachAllowed && pox5ContractId
         ? await readPoolForecast({
             store,
-            node,
+            node: projectionNode,
             sourceId,
             managerPrincipal,
             pox5ContractId,
@@ -1788,7 +1799,7 @@ export class OperatorService {
       manager.attachAllowed && pox5ContractId
         ? await readRewardOutlook({
             store,
-            node,
+            node: projectionNode,
             managerPrincipal,
             pox5ContractId,
             observedAt: generatedAt,
@@ -1802,7 +1813,7 @@ export class OperatorService {
       rewardOutlook && rewardCapability.executionAvailable && rewardCalculation.status === "ready"
         ? await readStxRewardStatus({
             store,
-            node,
+            node: projectionNode,
             sourceId,
             managerPrincipal,
             pox5ContractId: rewardOutlook.pox5ContractId,
@@ -1833,7 +1844,7 @@ export class OperatorService {
       })
         ? await readStxRewardStatus({
             store,
-            node,
+            node: projectionNode,
             sourceId,
             managerPrincipal,
             pox5ContractId: rewardOutlook.pox5ContractId,
