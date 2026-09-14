@@ -1,4 +1,3 @@
-import type { StacksNodeClient } from "./chain-clients.js";
 import type { ObserverInboxStatus } from "./storage/observer-inbox-repository.js";
 
 export const DEFAULT_OBSERVER_GAP_CHECK_INTERVAL_MS = 15_000;
@@ -33,7 +32,9 @@ export interface ObserverGapLogger {
   warn(bindings: Record<string, unknown>, message: string): void;
 }
 
-type GapNode = Pick<StacksNodeClient, "getInfo">;
+type GapNode = {
+  getInfo(options?: { signal?: AbortSignal }): Promise<{ stacks_tip_height: number }>;
+};
 
 function safeError(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).slice(0, 500);

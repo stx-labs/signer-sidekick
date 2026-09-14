@@ -206,6 +206,12 @@ reads share a 30-second advisory result, without caching fresh preparation or tr
 The Bitcoin timing display refreshes one recent page every five minutes and reconciles its
 200-block window hourly; changed overlap triggers a full refresh.
 
+Local health samples remain every five seconds. Observer-gap checks reuse a successful node sample
+up to ten seconds old, falling back to RPC if it is missing, failed, stale or from another configuration.
+Background reward/forecast reads share at most 512 contract values for one node and exact block hash,
+for up to five minutes, with eight concurrent reads. Canonicality is checked before reuse; local
+projections still rebuild. Failures/reorgs clear the cache. Explicit refresh and preparation bypass it.
+
 `/metrics` is outside API bearer authentication; keep the listener private (loopback by default).
 It exposes `sidekick_upstream_requests_total` by normalized origin, route,
 method and status. It counts HTTP attempts including retries; `no_response` means no headers arrived.
@@ -223,6 +229,10 @@ sum by (origin) (increase(sidekick_upstream_requests_total[24h]))
 Backfill, active work, retries and manual requests add traffic. Measure them separately; no timer
 estimate is a daily quota. Reusing a failed advisory result does not restart its cooldown. Fresh
 transaction checks do not use that advisory cache.
+
+Contract-read savings depend on how long the roster anchor stays unchanged; a moving anchor,
+large pool or repeated failure reduces reuse. Compare endpoint counts **and** node RPC latency/CPU
+before and after upgrading, with separate idle, catch-up and payout windows.
 
 ## Local read performance check
 

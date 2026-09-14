@@ -18,6 +18,17 @@ surface. Configuration is defined by the [mainnet](../../.env.mainnet.example) a
 `SIDEKICK_NETWORK_ID`. Never place a signer or admin key, mnemonic, or production credential in the
 repository, fixtures, commands, screenshots, or support bundles.
 
+## Dependency and request budgets
+
+- Prefer platform APIs and existing dependencies. A new package needs a concrete benefit and a
+  review of its transitive footprint, maintenance and license; major upgrades need separate justification.
+- Keep security updates targeted. Do not replace established cryptography or security primitives
+  with homemade code merely to reduce dependency counts or silence an audit.
+- Measure upstream attempts and peak concurrency, not just timers. Keep background work bounded,
+  reuse identical anchored reads, and test failures, recovery and source changes.
+- Display caches are not signing evidence. Fresh preparation and canonicality checks must bypass
+  them; do not invent fresh observations from old samples or change health windows silently.
+
 ## Additional validation
 
 | Command | Purpose |
