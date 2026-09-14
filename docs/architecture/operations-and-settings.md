@@ -52,8 +52,12 @@ A delayed reference API is reported separately and does not block node-backed op
 [ADR 0008](decisions/0008-chain-evidence-and-reconciliation.md).
 
 A separate private callback listener is the low-latency input from the configured Stacks node. It
-commits bounded event-dispatcher payloads to a durable inbox before acknowledging them, records
+commits retained event-dispatcher payloads to a bounded durable inbox before acknowledgement, records
 duplicate attempts, and keeps callback contents out of permanent history and current projections.
+Overflow is acknowledged with HTTP 200 and `accepted: false`, discarded, and recovered through
+coalesced polling; it never blocks on node verification. Overflow warnings include a process-local
+discard count and are limited to once per minute. A recovery log means new callbacks fit again,
+not that backfill has completed. Existing queue-age and reconciliation diagnostics show that progress.
 The restart-safe inbox worker fences `/v2/info` with `/v3/tenures/info`, fetches the claimed
 Nakamoto block by index-block ID, and compares its raw bytes with the canonical block at the same
 height under that exact stable tip. Only a byte-identical index-block claim becomes

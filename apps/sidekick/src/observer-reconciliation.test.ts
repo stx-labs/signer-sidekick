@@ -82,6 +82,50 @@ function burnDelivery(height: number): StoredObserverDelivery {
 }
 
 describe("ObserverReconciliationScheduler", () => {
+  it("coalesces overflow catch-up without trusting callback heights or bypassing connection checks", async () => {
+    vi.useFakeTimers();
+    let connected = false;
+    const service = {
+      refreshSnapshot: vi.fn().mockResolvedValue(undefined),
+      refreshBackgroundSnapshot: vi.fn().mockResolvedValue(undefined),
+      synchronizeManagerActivity: vi.fn().mockResolvedValue(undefined),
+      synchronizeRewardRealizations: vi.fn().mockResolvedValue(undefined),
+      synchronize: vi.fn().mockResolvedValue(undefined),
+    };
+    const scheduler = new ObserverReconciliationScheduler({
+      service,
+      managerPrincipal,
+      getPox5ContractId: () => pox5ContractId,
+      canRun: () => connected,
+      logger: { info: vi.fn(), warn: vi.fn() },
+    });
+    try {
+      for (let i = 0; i < 100; i += 1) scheduler.requestCatchUp();
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(60_000);
+      for (const read of Object.values(service)) expect(read).not.toHaveBeenCalled();
+      connected = true;
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(service.refreshBackgroundSnapshot).toHaveBeenCalledExactlyOnceWith({
+        minimumStacksHeight: null,
+        minimumBurnHeight: null,
+      });
+      for (const read of [
+        service.synchronizeManagerActivity,
+        service.synchronizeRewardRealizations,
+        service.synchronize,
+      ]) {
+        expect(read).toHaveBeenCalledExactlyOnceWith({
+          signal: expect.any(AbortSignal),
+          minimumStacksHeight: null,
+        });
+      }
+    } finally {
+      await scheduler.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it("passes verified callback heights to the shared background refresh path", async () => {
     vi.useFakeTimers();
     const service = {

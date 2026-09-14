@@ -1,6 +1,6 @@
 # ADR 0008: Node-authoritative event reconciliation
 
-- Status: Accepted; transaction-execution policy amended 2026-09-07–08
+- Status: Accepted; execution policy amended 2026-09-07–08; callback overflow amended 2026-09-14
 - Date: 2026-08-16
 
 ## Decision
@@ -12,9 +12,13 @@ positive node-proved conflict. Optional-source failure degrades its domain, not 
 
 ### Callbacks and history
 
-The private listener commits bounded callbacks to a durable inbox before acknowledgement. A worker
-checks the claimed Nakamoto block against a stable local-node anchor and accepts only byte-identical
-canonical evidence. Malformed, conflicting or forged claims are quarantined. Burn-block callbacks
+The private listener commits retained callbacks to a bounded durable inbox before acknowledgement.
+At capacity it returns HTTP 200 with `accepted: false`, discards the excess notification, and
+requests coalesced reconciliation without trusting its contents or height. Startup and periodic
+reconciliation cover lost scheduling requests; no discarded callback becomes verified evidence.
+The node's Sidekick observer disables retries rather than waiting indefinitely for an offline listener.
+A worker checks the claimed Nakamoto block against a stable local-node anchor and accepts only
+byte-identical canonical evidence. Malformed, conflicting or forged claims are quarantined. Burn-block callbacks
 remain trigger-only where the node cannot supply an equivalent proof.
 
 Verified callbacks trigger focused refreshes; embedded events are not domain history. Indexed

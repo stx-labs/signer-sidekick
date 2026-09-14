@@ -5,7 +5,7 @@ import type {
 import { describe, expect, it, vi } from "vitest";
 import type { ApiCredential, SidekickConfig } from "./config.js";
 import { DeploymentRequirementsService } from "./deployment-requirements.js";
-import type { ObserverRuntimeStatus } from "./observer-server.js";
+import { type ObserverRuntimeStatus, renderStacksEventObserverConfig } from "./observer-server.js";
 
 const config: SidekickConfig = {
   network: "mainnet",
@@ -132,6 +132,35 @@ function check(result: DeploymentRequirements, id: string) {
 }
 
 describe("deployment requirements", () => {
+  it("uses the CLI's non-retrying Sidekick observer configuration in setup guidance", async () => {
+    const result = await service({
+      observer: observer({
+        inbox: { ...observer().inbox, lastVerifiedStacksBlock: null, nodeVerified: 0 },
+      }),
+    }).check(true);
+    const fix = check(result, "sidekick-event-observer").remediation;
+    const rendered = renderStacksEventObserverConfig({
+      nodeReachableEndpoint: "node-reachable-host:3700",
+      managerPrincipal: connected.configured.managerPrincipal,
+      pox5ContractId: "SP000000000000000000002Q6VF78.pox-5",
+    });
+    expect(fix?.configuration).toContainEqual({
+      label: "Observer TOML template (replace the endpoint placeholder)",
+      format: "toml",
+      content: rendered.observerToml.replace(
+        '"node-reachable-host:3700"',
+        '"<node-reachable-host:3700>"',
+      ),
+    });
+    expect(rendered.observerToml).toContain("disable_retries = true");
+    expect(fix?.configuration).toContainEqual({
+      label: "Stacks node [node] table",
+      format: "toml",
+      content: rendered.nodeToml,
+    });
+    expect(fix?.steps.join(" ")).toContain("leave the signer's observer unchanged");
+  });
+
   it("ignores routine heights/timestamps but refreshes after one minute and credential changes", async () => {
     let clock = new Date("2026-08-15T12:00:00.000Z");
     let currentConfig = { ...config };

@@ -168,6 +168,7 @@ export async function executeCliCommand({
     let observerServer: ReturnType<typeof createObserverServer> | null = null;
     let observerListening = false;
     let observerProcessor: ObserverInboxProcessor | null = null;
+    let observerReconciliation: ObserverReconciliationScheduler | null = null;
     const closeStore = () => {
       if (storeClosed) return;
       storeClosed = true;
@@ -181,8 +182,10 @@ export async function executeCliCommand({
         ? createObserverServer({
             store: store.observerInbox,
             maxBodyBytes: observerConfig.maxBodyBytes,
-            logger: false,
+            logger: true,
             onAccepted: () => observerProcessor?.notify(),
+            // Before construction, startup/periodic reconciliation covers the same gap.
+            onOverflow: () => observerReconciliation?.requestCatchUp(),
           })
         : null;
       if (observerServer) {
@@ -306,7 +309,6 @@ export async function executeCliCommand({
       });
       const staticDirectory = env.SIDEKICK_STATIC_DIRECTORY;
       let reportObserverInboxError: (error: unknown) => void = () => undefined;
-      let observerReconciliation: ObserverReconciliationScheduler | null = null;
       let observerGapMonitor: ObserverGapMonitor | null = null;
       const processor = new ObserverInboxProcessor({
         store: store.observerInbox,

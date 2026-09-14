@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 import { parseContractPrincipal } from "@stx-labs/signer-sidekick-protocol/principals";
-import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
+import Fastify, {
+  type FastifyInstance,
+  type FastifyReply,
+  type FastifyRequest,
+  LogController,
+} from "fastify";
 import { z } from "zod";
 import type { ObserverGapStatus } from "./observer-gap-monitor.js";
 import type { ObserverReconciliationStatus } from "./observer-reconciliation.js";
@@ -39,6 +44,11 @@ const newBurnBlockClaimSchema = z
 const attachmentsClaimSchema = z.array(z.unknown());
 
 export type ObserverEndpointKind = "new-block" | "new-burn-block" | "attachments";
+
+const OVERFLOW_REPORT_INTERVAL_MS = 60_000;
+export const STACKS_EVENT_DISPATCHER_NODE_TOML = `# Add these keys to the node's existing [node] table.
+event_dispatcher_blocking = false
+event_dispatcher_queue_size = 1000`;
 
 export interface ObserverServerConfig {
   enabled: boolean;
@@ -99,10 +109,8 @@ events_keys = [
   "${input.managerPrincipal}::print",
 ]
 timeout_ms = 5000
-disable_retries = false`,
-    nodeToml: `# Add these keys to the node's existing [node] table.
-event_dispatcher_blocking = false
-event_dispatcher_queue_size = 1000`,
+disable_retries = true`,
+    nodeToml: STACKS_EVENT_DISPATCHER_NODE_TOML,
   };
 }
 
@@ -258,10 +266,12 @@ export function createObserverServer(options: {
   now?: () => Date;
   inboxLimits?: ObserverInboxLimits;
   onAccepted?: (delivery: AcceptedObserverDelivery) => Promise<void> | void;
+  onOverflow?: () => Promise<void> | void;
 }): FastifyInstance {
   const now = options.now ?? (() => new Date());
   const server = Fastify({
     logger: options.logger ?? false,
+    logController: new LogController({ disableRequestLogging: true }),
     bodyLimit: options.maxBodyBytes,
     requestTimeout: 5_000,
   });
@@ -269,6 +279,21 @@ export function createObserverServer(options: {
   server.addContentTypeParser("application/json", { parseAs: "string" }, (_request, body, done) =>
     done(null, body),
   );
+  let overflowedCallbacks = 0;
+  let lastOverflowReportAt: number | null = null;
+  let reportRecovery = false;
+  const followUp = (work: () => Promise<void> | void) => {
+    queueMicrotask(() => {
+      void Promise.resolve()
+        .then(() => work())
+        .catch((error: unknown) => {
+          server.log.warn(
+            { error: error instanceof Error ? error.message : String(error) },
+            "Observer follow-up failed; startup and periodic reconciliation remain available",
+          );
+        });
+    });
+  };
 
   const accept =
     (endpointKind: ObserverEndpointKind) =>
@@ -301,23 +326,41 @@ export function createObserverServer(options: {
         );
       } catch (error) {
         if (error instanceof ObserverInboxCapacityError) {
-          return reply
-            .header("retry-after", "15")
-            .code(503)
-            .send({ error: "observer inbox is full; retry later" });
+          // A retrying node can block before its RPC/tip advances, which this inbox needs
+          // to drain. Drop only this rolled-back callback, never domain or transaction data.
+          overflowedCallbacks += 1;
+          const reportedAt = now().getTime();
+          if (
+            lastOverflowReportAt === null ||
+            reportedAt - lastOverflowReportAt >= OVERFLOW_REPORT_INTERVAL_MS
+          ) {
+            lastOverflowReportAt = reportedAt;
+            reportRecovery = true;
+            server.log.warn(
+              { overflowedCallbacks },
+              "Observer inbox full; callbacks discarded without blocking the node; polling reconciliation will catch up",
+            );
+            // No unverified height or event data crosses into the reconciliation request.
+            if (options.onOverflow) followUp(options.onOverflow);
+          }
+          // Stacks Core requires 200 (not 202/204) to stop retrying a delivery.
+          return reply.code(200).send({
+            schemaVersion: 1,
+            accepted: false,
+            reason: "inbox-full",
+            recovery: "polling-reconciliation",
+          });
         }
         throw error;
       }
-      if (options.onAccepted) {
-        queueMicrotask(() => {
-          void Promise.resolve(options.onAccepted?.(delivery)).catch((error: unknown) => {
-            server.log.warn(
-              { error: error instanceof Error ? error.message : String(error) },
-              "Observer delivery follow-up failed; the durable inbox retains it for retry",
-            );
-          });
-        });
+      if (reportRecovery && !delivery.duplicate && delivery.state === "observer-claimed") {
+        reportRecovery = false;
+        server.log.info(
+          { overflowedCallbacks },
+          "Observer inbox accepts new callbacks again; discarded callbacks still require reconciliation",
+        );
       }
+      if (options.onAccepted) followUp(() => options.onAccepted?.(delivery));
       return {
         schemaVersion: 1,
         accepted: true,

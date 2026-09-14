@@ -81,7 +81,7 @@ export interface ObserverInboxLimits {
 
 export class ObserverInboxCapacityError extends Error {
   constructor() {
-    super("Observer inbox capacity is exhausted; retry after Sidekick processes pending callbacks");
+    super("Observer inbox capacity is exhausted; the new callback was not retained");
     this.name = "ObserverInboxCapacityError";
   }
 }

@@ -101,4 +101,6 @@ docker compose run --rm --no-deps sidekick observer config NODE_REACHABLE_SIDEKI
 
 Use loopback only for a shared network namespace. Otherwise use a private container or host address
 and allow port 3700 only from the node. Merge the returned stanza without removing the signer
-observer.
+observer. Set `disable_retries = true` only for Sidekick's entry, including on existing deployments;
+apply a coordinated node restart. This prevents failed notifications from holding up the node.
+Sidekick discards inbox overflow and recovers through polling; notifications are not payment evidence.

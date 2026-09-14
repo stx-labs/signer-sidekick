@@ -11,6 +11,7 @@ import type { NodeInfo, NodeTenureInfo, SmartContractLogPage } from "./chain-cli
 import { syncManagerEvents } from "./manager-event-sync.js";
 import { ObserverInboxProcessor } from "./observer-inbox.js";
 import { ObserverReconciliationScheduler } from "./observer-reconciliation.js";
+import { createObserverServer } from "./observer-server.js";
 import { createChainSourceId, openSidekickStore, type SidekickStore } from "./storage/store.js";
 
 const manager = "SP000000000000000000002Q6VF78.signer-manager";
@@ -103,6 +104,158 @@ afterEach(() => {
 });
 
 describe("observer reconciliation integration", () => {
+  it.each([
+    "cold-start",
+    "running-outage",
+    "lost-follow-up",
+  ] as const)("lets bounded replay finish during %s and recovers a discarded payment through verified history", async (scenario) => {
+    const { store } = await openSidekickStore(":memory:", "2026-08-13T12:00:00.000Z");
+    openStores.push(store);
+    store.chainState.upsertSource({
+      sourceId,
+      kind: "api",
+      network: "mainnet",
+      baseUrl: "https://api.mainnet.hiro.so",
+      observedAt: "2026-08-13T12:00:00.000Z",
+    });
+    let nodeReady = false;
+    let indexedHistoryReady = false;
+    const block = identity("11");
+    const api = {
+      getSmartContractLogs: vi.fn(async () => {
+        if (!indexedHistoryReady) throw new Error("indexer catching up");
+        return page(txOne, 0, eventHex("claim-staker-rewards"));
+      }),
+      getTransaction: vi.fn(async (txId: string) => ({
+        tx_id: txId,
+        status: "success" as const,
+        block: {
+          height: 101,
+          hash: block.blockHash,
+          index_hash: block.indexBlockHash,
+          time: 1_784_000_000,
+          tx_index: 0,
+        },
+        bitcoin_block: { height: 962_300, time: 1_784_000_000 },
+      })),
+    };
+    const nodeTransactions = {
+      lookupIndexedTransaction: vi.fn(async (txId: string) => ({
+        status: "observed" as const,
+        httpStatus: 200,
+        value: {
+          txid: txId as `0x${string}`,
+          transactionHex: "00",
+          nonce: 0n,
+          feeUstx: 0n,
+          indexBlockHash: block.indexBlockHash,
+          blockHeight: 101n,
+          isCanonical: true,
+          resultRepr: "(ok true)",
+        },
+      })),
+    };
+    const scheduler = new ObserverReconciliationScheduler({
+      service: {
+        refreshSnapshot: vi.fn().mockResolvedValue(undefined),
+        synchronizeManagerActivity: async (options) =>
+          syncManagerEvents({
+            store,
+            api,
+            nodeTransactions,
+            sourceId,
+            chainId: 1,
+            managerPrincipal: manager,
+            eventVocabulary: "reference-manager-v1",
+            observedAt: "2026-08-13T12:00:01.000Z",
+            pageLimit: 100,
+            ...(options?.signal ? { signal: options.signal } : {}),
+          }),
+        synchronizeRewardRealizations: vi.fn().mockResolvedValue(undefined),
+        synchronize: vi.fn().mockResolvedValue(undefined),
+      },
+      logger: { info: vi.fn(), warn: vi.fn() },
+      managerPrincipal: manager,
+      getPox5ContractId: () => pox5,
+      canRun: () => nodeReady,
+      failureDelayMs: 10,
+      maxBackoffMs: 20,
+    });
+    const node = {
+      getInfo: vi.fn(async () => ({
+        network_id: 1,
+        burn_block_height: 962_300,
+        stacks_tip_height: 119,
+        stacks_tip: block.blockHash,
+      })),
+      getTenureInfo: vi.fn(async () => ({
+        tip_block_id: block.indexBlockHash,
+        tip_height: 119,
+        reward_cycle: 141,
+      })),
+      getNakamotoBlockById: vi.fn(async () => block.bytes),
+      getNakamotoBlockAtHeight: vi.fn(async () => block.bytes),
+    };
+    const processor = new ObserverInboxProcessor({
+      store: store.observerInbox,
+      getNode: () => node,
+      canProcess: () => nodeReady,
+      onProcessed: (delivery, outcome) => scheduler.notifyProcessed(delivery, outcome),
+    });
+    const server = createObserverServer({
+      store: store.observerInbox,
+      maxBodyBytes: 4 * 1_024 * 1_024,
+      inboxLimits: { maximumPendingDeliveries: 1, maximumPendingPayloadBytes: 1_024 * 1_024 },
+      onAccepted: () => processor.notify(),
+      // Simulate loss of the in-memory request before worker construction or on restart.
+      ...(scenario === "lost-follow-up" ? {} : { onOverflow: () => scheduler.requestCatchUp() }),
+    });
+    try {
+      if (scenario === "running-outage") {
+        scheduler.start();
+        processor.start();
+      }
+      // The producer will not expose RPC until every replayed callback is acknowledged.
+      // The payment is in the *discarded* second callback, not the retained first one.
+      for (let offset = 0; offset < 20; offset += 1) {
+        const payload = {
+          ...JSON.parse(callbackBody(block, txOne)),
+          block_height: 100 + offset,
+          ...(offset === 1 ? {} : { events: [] }),
+        };
+        const response = await server.inject({ method: "POST", url: "/new_block", payload });
+        expect(response.statusCode).toBe(200);
+        expect(response.json().accepted).toBe(offset === 0);
+      }
+      expect(store.observerInbox.status()).toMatchObject({
+        queueDepth: 1,
+        uniqueDeliveries: 1,
+        processingAttempts: 0,
+      });
+      expect(node.getInfo).not.toHaveBeenCalled();
+      expect(api.getSmartContractLogs).not.toHaveBeenCalled();
+      expect(store.listManagerClaims(1, manager).total).toBe(0);
+
+      nodeReady = true;
+      scheduler.start();
+      processor.start();
+      processor.notify();
+      await vi.waitFor(() => expect(store.observerInbox.status().queueDepth).toBe(0));
+      await vi.waitFor(() => expect(api.getSmartContractLogs).toHaveBeenCalled());
+      // Even after inbox recovery, missing source evidence must not invent a payment.
+      expect(store.listManagerClaims(1, manager).total).toBe(0);
+      indexedHistoryReady = true;
+      await vi.waitFor(() => expect(store.listManagerClaims(1, manager).total).toBe(1));
+      expect(nodeTransactions.lookupIndexedTransaction).toHaveBeenCalledWith(txOne);
+      expect(store.listManagerClaims(1, manager).items[0]?.stakerPrincipal).toBe(staker);
+      expect(store.observerInbox.status().uniqueDeliveries).toBe(1);
+    } finally {
+      await server.close();
+      await processor.stop();
+      await scheduler.stop();
+    }
+  });
+
   it("converges permanent manager activity after a callback-observed reorg", async () => {
     const { store } = await openSidekickStore(":memory:", "2026-08-13T12:00:00.000Z");
     openStores.push(store);
