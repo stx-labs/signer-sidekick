@@ -1,5 +1,16 @@
 # Unreleased
 
+## Dependency security
+
+- Update Fastify to 5.12.1, fast-uri to 3.1.6/4.1.3, Vitest to 4.1.11, PostCSS to
+  8.5.23 and Nano ID to 3.3.18. Transitive overrides preserve each major version;
+  no operator configuration changes.
+- Two dashboard wallet-chain advisories remain: `decode-uri-component`
+  ([GHSA-vcc3-ghjq-m6fr](https://github.com/advisories/GHSA-vcc3-ghjq-m6fr)) needs a compatible
+  SDK update because its patched release is ESM-only but its caller uses CommonJS;
+  `elliptic` ([GHSA-848j-6mx2-7j84](https://github.com/advisories/GHSA-848j-6mx2-7j84)) has no
+  patched release. Neither alert is suppressed; this update is not a clean security audit.
+
 ## Operator changes
 
 - Reviewed managers accept exact or canonical program matches, including supported comment and
