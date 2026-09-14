@@ -472,7 +472,10 @@ export async function executeCliCommand({
         canRun: () => connection.current()?.status === "connected",
       });
       observerGapMonitor = new ObserverGapMonitor({
-        getNode: () => runtimeSettings.clients().node,
+        getNode: () => ({
+          getInfo: async (options) =>
+            health.recentNodeInfo() ?? (await runtimeSettings.clients().node.getInfo(options)),
+        }),
         getInbox: () => store.observerInbox.status(),
         onGap: (status) =>
           observerReconciliation?.request("current", {

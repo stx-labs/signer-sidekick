@@ -90,6 +90,17 @@ export class HealthMonitoringService {
     ]);
   }
 
+  /** Advisory gap detection only; never a health sample, connection gate or signing witness. */
+  recentNodeInfo() {
+    if (this.configFingerprint !== healthConfigurationFingerprint(this.options.getConfig()))
+      return null;
+    const latest = this.observations.at(-1);
+    if (!latest?.nodeRpc.reachable || !latest.nodeInfo) return null;
+    const age =
+      (this.options.now?.() ?? new Date()).getTime() - Date.parse(latest.nodeRpc.checkedAt);
+    return age >= 0 && age <= 2 * defaultPollIntervalMs ? latest.nodeInfo : null;
+  }
+
   async refresh(): Promise<HealthSnapshot> {
     this.refreshing ??= this.collect().finally(() => {
       this.refreshing = null;

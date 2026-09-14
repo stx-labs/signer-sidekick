@@ -2,6 +2,9 @@
 
 ## Operator changes
 
+- Background reward/forecast collection reuses identical anchored contract reads and limits its
+  concurrent reads to eight. Observer-gap checks reuse recent health samples. Explicit preparation,
+  canonical verification, five-second health sampling and callback freshness targets are unchanged.
 - Reviewed managers accept exact or canonical program matches, including supported comment and
   whitespace variants. Execution environment and required functions still match; sealed actions
   retain the deployed raw source hash. Changed interpretation replays retained history, including
