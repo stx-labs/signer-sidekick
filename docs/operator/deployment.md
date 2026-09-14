@@ -150,10 +150,13 @@ docker compose run --rm --no-deps sidekick observer config NODE_REACHABLE_SIDEKI
 ```
 
 Merge `observerToml` and `nodeToml` into the existing node configuration without replacing the
-signer's observer. `nodeToml` keeps callback dispatch nonblocking with a bounded queue. Apply the
-configuration and node restart through your infrastructure tooling.
+signer's observer. Keep `disable_retries = true` on Sidekick's observer only, including when
+upgrading an existing deployment; Sidekick does not edit node TOML. The bounded nonblocking
+dispatcher can still block when full, so disabling retries protects node progress if Sidekick is
+offline. Apply the configuration and coordinated node restart through your infrastructure tooling.
 Port 3700 has no application authentication; expose it only to the node. Settings confirms the first
-node-verified callback. Polling and API backfill continue if callbacks stop.
+node-verified callback. At inbox capacity, Sidekick returns 200 with `accepted: false` and discards
+the notification. Polling and API backfill recover gaps once their sources are available.
 
 ## Operator access
 

@@ -326,6 +326,8 @@ export class ObserverReconciliationScheduler {
     this.request("current");
     this.request("manager-activity");
     this.request("rewards");
+    // Overflow can request roster recovery before operational workers are allowed to start.
+    if (this.#states.roster.pending) this.#schedule("roster", 0);
     this.#scheduleManagerActivityBackfill();
   }
 
@@ -353,6 +355,14 @@ export class ObserverReconciliationScheduler {
     }
     state.lastRequestedAt = this.#now().toISOString();
     if (this.#started && !state.running && !state.timer) this.#schedule(domain, 0);
+  }
+
+  requestCatchUp(): void {
+    // A discarded callback supplies no trusted height or domain hint. Use existing
+    // coalesced readers; their connection gates and verification rules are unchanged.
+    for (const domain of ["current", "manager-activity", "rewards", "roster"] as const) {
+      this.request(domain);
+    }
   }
 
   notifyProcessed(

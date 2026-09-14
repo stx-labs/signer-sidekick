@@ -74,7 +74,7 @@ events_keys = [
   "SP000000000000000000002Q6VF78.signer-manager::print",
 ]
 timeout_ms = 5000
-disable_retries = false`,
+disable_retries = true`,
       nodeToml: `# Add these keys to the node's existing [node] table.
 event_dispatcher_blocking = false
 event_dispatcher_queue_size = 1000`,
@@ -281,7 +281,7 @@ describe("observer delivery ingress", () => {
     await server.close();
   });
 
-  it("rejects new callbacks at the durable pending limit but still acknowledges duplicates", async () => {
+  it("acknowledges overflow without retaining it and still deduplicates accepted callbacks", async () => {
     const result = await openSidekickStore(":memory:", "2026-08-13T12:00:00.000Z");
     const { store } = result;
     opened.push(store);
@@ -315,8 +315,14 @@ describe("observer delivery ingress", () => {
         index_block_hash: `0x${"66".repeat(32)}`,
       },
     });
-    expect(full.statusCode).toBe(503);
-    expect(full.headers["retry-after"]).toBe("15");
+    expect(full.statusCode).toBe(200);
+    expect(full.headers["retry-after"]).toBeUndefined();
+    expect(full.json()).toEqual({
+      schemaVersion: 1,
+      accepted: false,
+      reason: "inbox-full",
+      recovery: "polling-reconciliation",
+    });
     expect(store.observerInbox.status()).toMatchObject({
       uniqueDeliveries: 1,
       deliveryAttempts: 2,
@@ -347,14 +353,128 @@ describe("observer delivery ingress", () => {
       },
     });
 
-    expect(response.statusCode).toBe(503);
-    expect(response.headers["retry-after"]).toBe("15");
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["retry-after"]).toBeUndefined();
+    expect(response.json()).toMatchObject({ accepted: false, reason: "inbox-full" });
     expect(store.observerInbox.status()).toMatchObject({
       uniqueDeliveries: 0,
       deliveryAttempts: 0,
       queueDepth: 0,
     });
     await server.close();
+  });
+
+  it("bounds overflow reports and catch-up requests during a prolonged node outage", async () => {
+    const { store } = await openSidekickStore(":memory:", "2026-08-13T12:00:00.000Z");
+    opened.push(store);
+    let clock = Date.parse("2026-08-13T12:01:00.000Z");
+    const onOverflow = vi.fn();
+    const onAccepted = vi.fn();
+    const server = createObserverServer({
+      store: store.observerInbox,
+      maxBodyBytes: 4 * 1_024 * 1_024,
+      inboxLimits: { maximumPendingDeliveries: 1, maximumPendingPayloadBytes: 1_024 * 1_024 },
+      now: () => new Date(clock),
+      onOverflow,
+      onAccepted,
+    });
+    const warn = vi.spyOn(server.log, "warn");
+    const info = vi.spyOn(server.log, "info");
+    const send = (height: number) =>
+      server.inject({
+        method: "POST",
+        url: "/new_block",
+        payload: {
+          block_hash: blockHash,
+          index_block_hash: indexBlockHash,
+          block_height: height,
+          events: [],
+          transactions: [],
+        },
+      });
+    try {
+      await send(1);
+      // Each 5-second arrival sees a full inbox; no processor or node is available.
+      for (let tick = 0; tick < 720; tick += 1) {
+        clock = Date.parse("2026-08-13T12:01:00.000Z") + tick * 5_000;
+        expect((await send(tick + 2)).statusCode).toBe(200);
+      }
+      expect(onOverflow).toHaveBeenCalledTimes(60);
+      expect(warn).toHaveBeenCalledTimes(60);
+      expect(onOverflow.mock.calls.every((args) => args.length === 0)).toBe(true);
+      expect(onAccepted).toHaveBeenCalledOnce();
+      expect(store.observerInbox.status()).toMatchObject({
+        queueDepth: 1,
+        uniqueDeliveries: 1,
+        processingAttempts: 0,
+      });
+      // Duplicate/unused callbacks are not evidence that pending capacity recovered.
+      await send(1);
+      await server.inject({ method: "POST", url: "/attachments/new", payload: [] });
+      expect(info).not.toHaveBeenCalled();
+      const retained = store.observerInbox.claimNextDelivery(new Date(clock).toISOString());
+      expect(retained).not.toBeNull();
+      store.observerInbox.finishDelivery({
+        deliveryId: retained?.deliveryId as string,
+        state: "expired",
+        reason: "test-drained",
+        completedAt: new Date(clock).toISOString(),
+      });
+      expect((await send(1000)).json()).toMatchObject({ accepted: true });
+      expect(info).toHaveBeenCalledOnce();
+      expect(info).toHaveBeenCalledWith(
+        { overflowedCallbacks: 720 },
+        expect.stringContaining("discarded callbacks still require reconciliation"),
+      );
+      // Rapid recovery/overflow oscillation must not reset the report/request budget.
+      await send(1001);
+      expect(warn).toHaveBeenCalledTimes(60);
+      expect(onOverflow).toHaveBeenCalledTimes(60);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it.each([
+    "throws",
+    "rejects",
+  ] as const)("keeps overflow acknowledgement independent of a catch-up hook that %s", async (failure) => {
+    const { store } = await openSidekickStore(":memory:", "2026-08-13T12:00:00.000Z");
+    opened.push(store);
+    const server = createObserverServer({
+      store: store.observerInbox,
+      maxBodyBytes: 4 * 1_024 * 1_024,
+      inboxLimits: { maximumPendingDeliveries: 1, maximumPendingPayloadBytes: 1 },
+      onOverflow: () => {
+        if (failure === "throws") throw new Error("catch-up unavailable");
+        return Promise.reject(new Error("catch-up unavailable"));
+      },
+    });
+    const warn = vi.spyOn(server.log, "warn");
+    try {
+      const response = await server.inject({
+        method: "POST",
+        url: "/new_block",
+        payload: {
+          block_hash: blockHash,
+          index_block_hash: indexBlockHash,
+          block_height: 100,
+          events: [],
+          transactions: [],
+        },
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ accepted: false, reason: "inbox-full" });
+      await vi.waitFor(() =>
+        expect(warn).toHaveBeenCalledWith(
+          { error: "catch-up unavailable" },
+          expect.stringContaining("startup and periodic reconciliation"),
+        ),
+      );
+      expect(store.observerInbox.status().uniqueDeliveries).toBe(0);
+    } finally {
+      await server.close();
+    }
   });
 
   it("bounds retained raw callback JSON while preserving terminal delivery evidence", async () => {

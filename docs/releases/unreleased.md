@@ -13,6 +13,9 @@
 
 ## Operator changes
 
+- Event-inbox overflow no longer stalls the node: Sidekick acknowledges and discards excess
+  notifications, then catches up through normal verified reconciliation. Overflow warnings and catch-up
+  requests are limited to once per minute; retained callbacks and financial records are unchanged.
 - Background reward/forecast collection reuses identical anchored contract reads and limits its
   concurrent reads to eight. Observer-gap checks reuse recent health samples. Explicit preparation,
   canonical verification, five-second health sampling and callback freshness targets are unchanged.
@@ -66,6 +69,13 @@ unattended-run mode. Local benchmark and deterministic request budgets are not a
 guarantee; measure each instance with [Operations](../operator/operations.md).
 
 ## Upgrade and recovery
+
+**Existing event-observer deployments:** set `disable_retries = true` in the Stacks node's
+Sidekick-specific `[[events_observer]]` entry, then apply a coordinated node restart. Leave the
+signer's own observer and other consumers unchanged. Upgrading Sidekick does not edit node TOML.
+The CLI and Settings now generate this value. A bounded nonblocking dispatcher can still block
+when full; disabling retries also protects node progress while Sidekick is offline. Missed
+notifications are recovered by polling once the node and indexed API are available.
 
 Back up the database, gas-wallet key and deployment configuration as one protected restore set.
 Migration **40** adds nullable run/sweep execution provenance and preserves legacy halted-run

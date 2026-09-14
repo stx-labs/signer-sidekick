@@ -6,7 +6,11 @@ import {
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { type ApiCredential, hiroReferenceApiCredential, type SidekickConfig } from "./config.js";
 import { testHealthSource } from "./health-monitoring-sources.js";
-import type { ObserverRuntimeStatus } from "./observer-server.js";
+import {
+  type ObserverRuntimeStatus,
+  renderStacksEventObserverConfig,
+  STACKS_EVENT_DISPATCHER_NODE_TOML,
+} from "./observer-server.js";
 import { LiveTransactionReader } from "./transaction-engine/live-transaction-reader.js";
 
 const docsUrl =
@@ -328,17 +332,14 @@ function observerCheck(
   connection: ConnectionAssessment | null,
 ): DeploymentRequirement {
   const commandPort = status.listener?.port ?? 3700;
+  const placeholderEndpoint = `node-reachable-host:${commandPort}`;
   const observerToml =
     connection?.observed?.pox5ContractId && connection.configured.managerPrincipal
-      ? `[[events_observer]]
-endpoint = "<node-reachable-host:${commandPort}>"
-events_keys = [
-  "burn_blocks",
-  "${connection.observed.pox5ContractId}::print",
-  "${connection.configured.managerPrincipal}::print",
-]
-timeout_ms = 5000
-disable_retries = false`
+      ? renderStacksEventObserverConfig({
+          nodeReachableEndpoint: placeholderEndpoint,
+          pox5ContractId: connection.observed.pox5ContractId,
+          managerPrincipal: connection.configured.managerPrincipal,
+        }).observerToml.replace(`"${placeholderEndpoint}"`, `"<${placeholderEndpoint}>"`)
       : null;
   const configuration = [
     {
@@ -364,14 +365,14 @@ SIDEKICK_EVENT_HTTP_PORT=${commandPort}`,
     {
       label: "Stacks node [node] table",
       format: "toml" as const,
-      content:
-        "# Add these keys to the existing [node] table.\nevent_dispatcher_blocking = false\nevent_dispatcher_queue_size = 1000",
+      content: STACKS_EVENT_DISPATCHER_NODE_TOML,
     },
   ];
   const fix = remediation({
     steps: [
       "Run the observer config command with the host and port that stacks-node can use to reach Sidekick. Loopback is correct only when both processes share a network namespace.",
       "Copy the generated [[events_observer]] stanza and [node] keys into the existing node configuration without replacing other observers, then restart stacks-node.",
+      "Set disable_retries = true only for Sidekick's observer, including on existing deployments. Failed notifications are recovered by polling; leave the signer's observer unchanged.",
       "Wait for the next Stacks or burn block and refresh this check. Sidekick never edits the node configuration itself.",
     ],
     configuration,

@@ -10,7 +10,7 @@ of truth.
 | Component | Responsibility |
 | --- | --- |
 | Sidekick API | Serves typed operator pages, coordinates refreshes, prepares wallet intents, and verifies submitted transactions. |
-| Observer listener | Accepts bounded Stacks event callbacks on a private endpoint and durably queues them before acknowledgement. |
+| Observer listener | Durably queues retained callbacks on a private endpoint; acknowledges and discards overflow for polling recovery. |
 | Reconciliation workers | Verify callback claims, refresh affected domains, backfill current-member history, and run periodic anti-entropy. |
 | Health monitor | Samples the local node and signer, compares optional independent references, and records durable finding episodes. |
 | SQLite store | Keeps raw evidence, canonical anchors, projections, operation state, settings, and audit history behind typed repositories. |
