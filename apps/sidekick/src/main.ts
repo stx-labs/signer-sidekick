@@ -478,7 +478,7 @@ export async function executeCliCommand({
           getInfo: async (options) =>
             health.recentNodeInfo() ?? (await runtimeSettings.clients().node.getInfo(options)),
         }),
-        getInbox: () => store.observerInbox.status(),
+        getInbox: () => store.observerInbox.operationalStatus(),
         onGap: (status) =>
           observerReconciliation?.request("current", {
             stacksHeight: status.nodeStacksHeight,
@@ -505,7 +505,13 @@ export async function executeCliCommand({
                 if ((await connection.check()).status !== "connected") {
                   throw new Error("The configured connection is not current");
                 }
-                return await service.refreshBackgroundSnapshot();
+                const snapshot = await service.refreshBackgroundSnapshot();
+                try {
+                  store.snapshotHistory.maintain(new Date().toISOString());
+                } catch (error) {
+                  server.log.warn({ err: error }, "Snapshot detail compaction deferred");
+                }
+                return snapshot;
               },
             },
             server.log,

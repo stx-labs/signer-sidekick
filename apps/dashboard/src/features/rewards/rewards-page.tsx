@@ -118,6 +118,15 @@ export function Rewards({
   useDomainSection("rewards", section);
   const cacheScope = `${data.network}:${data.managerPrincipal}`;
   const [ledger, setLedger] = useState<RewardLedger | null>(null);
+  const [historyPages, setHistoryPages] = useState<(number | null)[]>([null]);
+  const historyScope = useRef(cacheScope);
+  const beforeCycle = historyScope.current === cacheScope ? (historyPages.at(-1) ?? null) : null;
+  useEffect(() => {
+    if (historyScope.current !== cacheScope) {
+      historyScope.current = cacheScope;
+      setHistoryPages([null]);
+    }
+  }, [cacheScope]);
   const [ledgerError, setLedgerError] = useState<string | null>(null);
   const [ledgerLoading, setLedgerLoading] = useState(true);
   const ledgerRefresh = useRef<ReturnType<typeof startVisibleRefresh> | null>(null);
@@ -157,7 +166,7 @@ export function Rewards({
     setLedgerError(null);
     const refresh = startVisibleRefresh(
       async (signal) => {
-        const result = await loadRewardLedger(token, {}, signal);
+        const result = await loadRewardLedger(token, { beforeCycle }, signal);
         if (signal.aborted) return;
         if (`${result.network}:${result.managerPrincipal}` !== cacheScope) {
           throw new Error(
@@ -179,7 +188,7 @@ export function Rewards({
       refresh.stop();
       ledgerRefresh.current = null;
     };
-  }, [token, cacheScope]);
+  }, [token, cacheScope, beforeCycle]);
 
   // Execution availability: gas wallet + engine mode.
   useEffect(() => {
@@ -664,7 +673,11 @@ export function Rewards({
   // Past cycles are calendar history. An older cycle remains visible here even when one of its
   // distributions also appears in Distribute because it still needs the operator.
   const accruingCycle = earning?.cycle ?? ledger?.current.cycle ?? null;
-  const pastCycles = ledger ? pastRewardCycles(ledger, accruingCycle) : [];
+  const pastCycles = ledger
+    ? pastRewardCycles(ledger, accruingCycle).filter(
+        (cycle) => beforeCycle === null || cycle.cycle < beforeCycle,
+      )
+    : [];
   const currentCycleDistributions =
     ledger?.cycles.find((cycle) => cycle.cycle === accruingCycle)?.distributions ?? [];
   const completedCurrentDistributions = currentCycleDistributions.filter(
@@ -841,6 +854,30 @@ export function Rewards({
             geometry={geometry}
             burnBlockSeconds={burnBlockTiming?.averageSeconds ?? null}
           />
+          {historyPages.length > 1 || ledger.pagination?.nextBeforeCycle != null ? (
+            <nav className="actions" aria-label="Reward history pagination">
+              <button
+                type="button"
+                disabled={historyPages.length <= 1 || ledgerLoading}
+                onClick={() => setHistoryPages((pages) => pages.slice(0, -1))}
+              >
+                Newer cycles
+              </button>
+              <button
+                type="button"
+                disabled={ledger.pagination?.nextBeforeCycle == null || ledgerLoading}
+                onClick={() => {
+                  const next = ledger.pagination?.nextBeforeCycle;
+                  if (next != null) setHistoryPages((pages) => [...pages, next]);
+                }}
+              >
+                Older cycles
+              </button>
+              <span className="hint">
+                Showing loaded history. Accounting exports include every cycle.
+              </span>
+            </nav>
+          ) : null}
           <RewardFeeLedger token={token} ledger={ledger} feeActions={feeActions} />
         </>
       ) : null}

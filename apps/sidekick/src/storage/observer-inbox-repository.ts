@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { DatabaseSync } from "node:sqlite";
+import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import { z } from "zod";
 
 const hashSchema = z.string().regex(/^0x[0-9a-f]{64}$/);
@@ -153,6 +153,27 @@ export interface ObserverInboxStatus {
   };
 }
 
+export type ObserverInboxOperationalStatus = Pick<
+  ObserverInboxStatus,
+  "queueDepth" | "processing" | "oldestPendingAt" | "lastVerifiedStacksBlock"
+>;
+
+const counterNames = [
+  "unique_deliveries",
+  "delivery_attempts",
+  "processing_attempts",
+  "duplicates",
+  "node_verified",
+  "quarantined",
+  "expired",
+  "retained_payload_bytes",
+  "pruned_payloads",
+] as const;
+type InboxTotals = Record<(typeof counterNames)[number], number> & {
+  last_received_at: string | null;
+  last_processed_at: string | null;
+};
+
 export class ObserverInboxRepository {
   private retainedStatus: {
     revision: number;
@@ -160,7 +181,55 @@ export class ObserverInboxRepository {
     value: ObserverInboxStatus;
   } | null = null;
   private revision = 0;
+  private retainedTotals: { dataVersion: number; value: InboxTotals } | null = null;
   constructor(private readonly db: DatabaseSync) {}
+
+  private dataVersion(): number {
+    return Number(this.db.prepare("PRAGMA data_version").get()?.data_version);
+  }
+
+  /** Derived counters only: measure affected rows under the write lock, publish after commit. */
+  private mutate<T>(
+    affected: () => Partial<InboxTotals>,
+    write: () => T,
+    changed: (result: T) => boolean = () => true,
+  ): T {
+    this.db.exec("BEGIN IMMEDIATE");
+    let next = this.retainedTotals;
+    let result: T;
+    let didChange: boolean;
+    try {
+      if (next && next.dataVersion !== this.dataVersion()) next = null;
+      const before = next ? affected() : null;
+      result = write();
+      didChange = changed(result);
+      if (next && before && didChange) {
+        const after = affected();
+        const value = { ...next.value };
+        for (const key of counterNames) {
+          if (before[key] !== undefined && after[key] !== undefined)
+            value[key] += after[key] - before[key];
+        }
+        for (const key of ["last_received_at", "last_processed_at"] as const) {
+          if (before[key] === undefined || after[key] === undefined) continue;
+          // A backdated update may remove the global maximum. Rebuild rather than guess.
+          if (before[key] === value[key] && (after[key] ?? "") < (before[key] ?? "")) {
+            next = null;
+            break;
+          }
+          if ((after[key] ?? "") > (value[key] ?? "")) value[key] = after[key];
+        }
+        if (next) next = { ...next, value };
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+    this.retainedTotals = next;
+    if (didChange) this.revision += 1;
+    return result;
+  }
 
   acceptDelivery(
     input: ObserverDeliveryInput,
@@ -178,73 +247,86 @@ export class ObserverInboxRepository {
       .strict()
       .parse(limits);
     const proposedDeliveryId = randomUUID();
-    let accepted: z.infer<typeof acceptedObserverDeliveryRowSchema>;
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      const conflictingChainClaim =
-        value.endpointKind === "new-block" &&
-        value.claimedBlockHeight !== null &&
-        value.claimedIndexBlockHash !== null
-          ? this.db
-              .prepare(
-                `SELECT 1
+    const identity = ["(endpoint_kind = ? AND content_sha256 = ?)"];
+    const bindings: SQLInputValue[] = [value.endpointKind, value.contentSha256];
+    if (value.endpointKind === "new-block" && value.claimedIndexBlockHash !== null) {
+      identity.push(
+        "(endpoint_kind = 'new-block' AND claimed_index_block_hash = ? AND claimed_block_height = ?)",
+      );
+      bindings.push(value.claimedIndexBlockHash, value.claimedBlockHeight);
+    } else if (value.endpointKind === "new-burn-block" && value.claimedBurnBlockHash !== null) {
+      identity.push(
+        "(endpoint_kind = 'new-burn-block' AND claimed_burn_block_hash = ? AND claimed_burn_block_height = ?)",
+      );
+      bindings.push(value.claimedBurnBlockHash, value.claimedBurnBlockHeight);
+    }
+    const accepted = this.mutate(
+      () => this.readTotals(identity.join(" OR "), bindings),
+      () => {
+        const conflictingChainClaim =
+          value.endpointKind === "new-block" &&
+          value.claimedBlockHeight !== null &&
+          value.claimedIndexBlockHash !== null
+            ? this.db
+                .prepare(
+                  `SELECT 1
                  FROM observer_deliveries
                  WHERE endpoint_kind = 'new-block'
                    AND claimed_block_height = ?
                    AND claimed_index_block_hash = ?
                    AND content_sha256 <> ?
                  LIMIT 1`,
-              )
-              .get(value.claimedBlockHeight, value.claimedIndexBlockHash, value.contentSha256) !==
-            undefined
-          : value.endpointKind === "new-burn-block" &&
-              value.claimedBurnBlockHeight !== null &&
-              value.claimedBurnBlockHash !== null
-            ? this.db
-                .prepare(
-                  `SELECT 1
+                )
+                .get(value.claimedBlockHeight, value.claimedIndexBlockHash, value.contentSha256) !==
+              undefined
+            : value.endpointKind === "new-burn-block" &&
+                value.claimedBurnBlockHeight !== null &&
+                value.claimedBurnBlockHash !== null
+              ? this.db
+                  .prepare(
+                    `SELECT 1
                    FROM observer_deliveries
                    WHERE endpoint_kind = 'new-burn-block'
                      AND claimed_burn_block_height = ?
                      AND claimed_burn_block_hash = ?
                      AND content_sha256 <> ?
                    LIMIT 1`,
-                )
-                .get(
-                  value.claimedBurnBlockHeight,
-                  value.claimedBurnBlockHash,
-                  value.contentSha256,
-                ) !== undefined
-            : false;
-      const acceptedState = conflictingChainClaim ? "quarantined" : value.state;
-      const acceptedReason = conflictingChainClaim
-        ? "conflicting-callback-bodies-for-chain-position"
-        : value.stateReason;
-      const completedAt = acceptedState === "observer-claimed" ? null : value.receivedAt;
-      if (conflictingChainClaim) {
-        const where =
-          value.endpointKind === "new-block"
-            ? `endpoint_kind = 'new-block'
+                  )
+                  .get(
+                    value.claimedBurnBlockHeight,
+                    value.claimedBurnBlockHash,
+                    value.contentSha256,
+                  ) !== undefined
+              : false;
+        const acceptedState = conflictingChainClaim ? "quarantined" : value.state;
+        const acceptedReason = conflictingChainClaim
+          ? "conflicting-callback-bodies-for-chain-position"
+          : value.stateReason;
+        const completedAt = acceptedState === "observer-claimed" ? null : value.receivedAt;
+        if (conflictingChainClaim) {
+          const where =
+            value.endpointKind === "new-block"
+              ? `endpoint_kind = 'new-block'
                AND claimed_block_height = ? AND claimed_index_block_hash = ?`
-            : `endpoint_kind = 'new-burn-block'
+              : `endpoint_kind = 'new-burn-block'
                AND claimed_burn_block_height = ? AND claimed_burn_block_hash = ?`;
-        const identity =
-          value.endpointKind === "new-block"
-            ? [value.claimedBlockHeight, value.claimedIndexBlockHash]
-            : [value.claimedBurnBlockHeight, value.claimedBurnBlockHash];
-        this.db
-          .prepare(
-            `UPDATE observer_deliveries
+          const identity =
+            value.endpointKind === "new-block"
+              ? [value.claimedBlockHeight, value.claimedIndexBlockHash]
+              : [value.claimedBurnBlockHeight, value.claimedBurnBlockHash];
+          this.db
+            .prepare(
+              `UPDATE observer_deliveries
              SET state = 'quarantined',
                  state_reason = 'conflicting-callback-bodies-for-chain-position',
                  completed_at = COALESCE(completed_at, ?), updated_at = ?
              WHERE ${where}`,
-          )
-          .run(value.receivedAt, value.receivedAt, ...identity);
-      }
-      const row = this.db
-        .prepare(
-          `INSERT INTO observer_deliveries (
+            )
+            .run(value.receivedAt, value.receivedAt, ...identity);
+        }
+        const row = this.db
+          .prepare(
+            `INSERT INTO observer_deliveries (
             delivery_id, endpoint_kind, content_sha256, raw_payload_json, payload_bytes,
             state, state_reason, claimed_block_height, claimed_block_hash,
             claimed_index_block_hash, claimed_burn_block_height, claimed_burn_block_hash,
@@ -269,55 +351,52 @@ export class ObserverInboxRepository {
             last_received_at = excluded.last_received_at,
             updated_at = excluded.updated_at
           RETURNING delivery_id, state, delivery_attempts`,
-        )
-        .get(
-          proposedDeliveryId,
-          value.endpointKind,
-          value.contentSha256,
-          value.rawPayloadJson,
-          value.payloadBytes,
-          acceptedState,
-          acceptedReason,
-          value.claimedBlockHeight,
-          value.claimedBlockHash,
-          value.claimedIndexBlockHash,
-          value.claimedBurnBlockHeight,
-          value.claimedBurnBlockHash,
-          value.receivedAt,
-          value.receivedAt,
-          value.receivedAt,
-          completedAt,
-          value.receivedAt,
-        );
-      accepted = acceptedObserverDeliveryRowSchema.parse(row);
-      if (accepted.delivery_id === proposedDeliveryId && accepted.state === "observer-claimed") {
-        const pending = z
-          .object({
-            deliveries: z.number().int().nonnegative(),
-            payload_bytes: z.number().int().nonnegative(),
-          })
-          .parse(
-            this.db
-              .prepare(
-                `SELECT COUNT(*) AS deliveries, COALESCE(SUM(payload_bytes), 0) AS payload_bytes
+          )
+          .get(
+            proposedDeliveryId,
+            value.endpointKind,
+            value.contentSha256,
+            value.rawPayloadJson,
+            value.payloadBytes,
+            acceptedState,
+            acceptedReason,
+            value.claimedBlockHeight,
+            value.claimedBlockHash,
+            value.claimedIndexBlockHash,
+            value.claimedBurnBlockHeight,
+            value.claimedBurnBlockHash,
+            value.receivedAt,
+            value.receivedAt,
+            value.receivedAt,
+            completedAt,
+            value.receivedAt,
+          );
+        const accepted = acceptedObserverDeliveryRowSchema.parse(row);
+        if (accepted.delivery_id === proposedDeliveryId && accepted.state === "observer-claimed") {
+          const pending = z
+            .object({
+              deliveries: z.number().int().nonnegative(),
+              payload_bytes: z.number().int().nonnegative(),
+            })
+            .parse(
+              this.db
+                .prepare(
+                  `SELECT COUNT(*) AS deliveries, COALESCE(SUM(payload_bytes), 0) AS payload_bytes
                  FROM observer_deliveries
                  WHERE state IN ('observer-claimed', 'processing')`,
-              )
-              .get(),
-          );
-        if (
-          pending.deliveries > parsedLimits.maximumPendingDeliveries ||
-          pending.payload_bytes > parsedLimits.maximumPendingPayloadBytes
-        ) {
-          throw new ObserverInboxCapacityError();
+                )
+                .get(),
+            );
+          if (
+            pending.deliveries > parsedLimits.maximumPendingDeliveries ||
+            pending.payload_bytes > parsedLimits.maximumPendingPayloadBytes
+          ) {
+            throw new ObserverInboxCapacityError();
+          }
         }
-      }
-      this.db.exec("COMMIT");
-      this.revision += 1;
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
+        return accepted;
+      },
+    );
     if (accepted.state !== "observer-claimed" && accepted.state !== "processing")
       this.prunePayloads(value.receivedAt);
     return {
@@ -335,7 +414,8 @@ export class ObserverInboxRepository {
     ).toISOString();
     const retained = this.db
       .prepare(`SELECT COUNT(*) AS count, COALESCE(SUM(payload_bytes), 0) AS bytes,
-      MIN(COALESCE(completed_at, updated_at)) AS oldest FROM observer_deliveries
+      MIN(COALESCE(completed_at, updated_at)) AS oldest
+      FROM observer_deliveries INDEXED BY observer_terminal_payloads
       WHERE state IN ('node-verified', 'quarantined', 'expired') AND payload_pruned = 0`)
       .get() as { count: number; bytes: number; oldest: string | null };
     if (
@@ -344,9 +424,21 @@ export class ObserverInboxRepository {
       (retained.oldest === null || retained.oldest >= cutoff)
     )
       return 0;
-    const result = this.db
-      .prepare(
-        `WITH retained AS (
+    return this.mutate(
+      () => {
+        const payloads = this.db
+          .prepare(`SELECT COUNT(*) AS count,
+        COALESCE(SUM(payload_bytes), 0) AS bytes FROM observer_deliveries
+        INDEXED BY observer_terminal_payloads
+        WHERE state IN ('node-verified', 'quarantined', 'expired') AND payload_pruned = 0`)
+          .get() as { count: number; bytes: number };
+        // Pruning removes rows from this partial index, not from delivery history.
+        return { retained_payload_bytes: payloads.bytes, pruned_payloads: -payloads.count };
+      },
+      () => {
+        const result = this.db
+          .prepare(
+            `WITH retained AS (
            SELECT delivery_id,
              ROW_NUMBER() OVER (
                ORDER BY COALESCE(completed_at, updated_at) DESC, delivery_id DESC
@@ -355,7 +447,7 @@ export class ObserverInboxRepository {
                ORDER BY COALESCE(completed_at, updated_at) DESC, delivery_id DESC
              ) AS retained_bytes,
              COALESCE(completed_at, updated_at) AS terminal_at
-           FROM observer_deliveries
+           FROM observer_deliveries INDEXED BY observer_terminal_payloads
            WHERE state IN ('node-verified', 'quarantined', 'expired')
              AND payload_pruned = 0
          )
@@ -366,38 +458,46 @@ export class ObserverInboxRepository {
            FROM retained
            WHERE terminal_at < ? OR retained_rank > ? OR retained_bytes > ?
          )`,
-      )
-      .run(
-        parsedObservedAt,
-        cutoff,
-        MAX_RETAINED_OBSERVER_RAW_PAYLOADS,
-        MAX_RETAINED_OBSERVER_RAW_PAYLOAD_BYTES,
-      );
-    if (Number(result.changes) > 0) this.revision += 1;
-    return Number(result.changes);
+          )
+          .run(
+            parsedObservedAt,
+            cutoff,
+            MAX_RETAINED_OBSERVER_RAW_PAYLOADS,
+            MAX_RETAINED_OBSERVER_RAW_PAYLOAD_BYTES,
+          );
+        return Number(result.changes);
+      },
+      (count) => count > 0,
+    );
   }
 
   recoverDeliveries(recoveredAt: string): number {
     const parsedRecoveredAt = z.iso.datetime().parse(recoveredAt);
-    const result = this.db
-      .prepare(
-        `UPDATE observer_deliveries
+    return this.mutate(
+      () => ({}), // processing -> pending changes no lifetime counters or timestamps
+      () => {
+        const result = this.db
+          .prepare(
+            `UPDATE observer_deliveries
          SET state = 'observer-claimed', state_reason = 'recovered-after-restart',
              next_attempt_at = ?, updated_at = ?
          WHERE state = 'processing'`,
-      )
-      .run(parsedRecoveredAt, parsedRecoveredAt);
-    if (Number(result.changes) > 0) this.revision += 1;
-    return Number(result.changes);
+          )
+          .run(parsedRecoveredAt, parsedRecoveredAt);
+        return Number(result.changes);
+      },
+      (count) => count > 0,
+    );
   }
 
   claimNextDelivery(claimedAt: string): StoredObserverDelivery | null {
     const parsedClaimedAt = z.iso.datetime().parse(claimedAt);
-    this.db.exec("BEGIN IMMEDIATE");
-    try {
-      const row = this.db
-        .prepare(
-          `UPDATE observer_deliveries
+    return this.mutate(
+      () => this.readTotals("state IN ('observer-claimed', 'processing')"),
+      () => {
+        const row = this.db
+          .prepare(
+            `UPDATE observer_deliveries
            SET state = 'processing', state_reason = NULL,
                processing_attempts = processing_attempts + 1,
                last_processing_at = ?, updated_at = ?
@@ -412,30 +512,27 @@ export class ObserverInboxRepository {
              claimed_block_height, claimed_block_hash, claimed_index_block_hash,
              claimed_burn_block_height, claimed_burn_block_hash, processing_attempts,
              first_received_at, last_received_at, last_processing_at`,
-        )
-        .get(parsedClaimedAt, parsedClaimedAt, parsedClaimedAt);
-      const delivery = row ? storedObserverDeliveryRowSchema.parse(row) : null;
-      this.db.exec("COMMIT");
-      if (!delivery) return null;
-      this.revision += 1;
-      return {
-        deliveryId: delivery.delivery_id,
-        endpointKind: delivery.endpoint_kind,
-        rawPayloadJson: delivery.raw_payload_json,
-        claimedBlockHeight: delivery.claimed_block_height,
-        claimedBlockHash: delivery.claimed_block_hash,
-        claimedIndexBlockHash: delivery.claimed_index_block_hash,
-        claimedBurnBlockHeight: delivery.claimed_burn_block_height,
-        claimedBurnBlockHash: delivery.claimed_burn_block_hash,
-        processingAttempts: delivery.processing_attempts,
-        firstReceivedAt: delivery.first_received_at,
-        lastReceivedAt: delivery.last_received_at,
-        lastProcessingAt: delivery.last_processing_at,
-      };
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
-    }
+          )
+          .get(parsedClaimedAt, parsedClaimedAt, parsedClaimedAt);
+        const delivery = row ? storedObserverDeliveryRowSchema.parse(row) : null;
+        if (!delivery) return null;
+        return {
+          deliveryId: delivery.delivery_id,
+          endpointKind: delivery.endpoint_kind,
+          rawPayloadJson: delivery.raw_payload_json,
+          claimedBlockHeight: delivery.claimed_block_height,
+          claimedBlockHash: delivery.claimed_block_hash,
+          claimedIndexBlockHash: delivery.claimed_index_block_hash,
+          claimedBurnBlockHeight: delivery.claimed_burn_block_height,
+          claimedBurnBlockHash: delivery.claimed_burn_block_hash,
+          processingAttempts: delivery.processing_attempts,
+          firstReceivedAt: delivery.first_received_at,
+          lastReceivedAt: delivery.last_received_at,
+          lastProcessingAt: delivery.last_processing_at,
+        };
+      },
+      (delivery) => delivery !== null,
+    );
   }
 
   finishDelivery(input: ObserverDeliveryCompletion): void {
@@ -443,17 +540,21 @@ export class ObserverInboxRepository {
     const state = z.enum(["node-verified", "quarantined", "expired"]).parse(input.state);
     const reason = z.string().min(1).max(500).parse(input.reason);
     const completedAt = z.iso.datetime().parse(input.completedAt);
-    const result = this.db
-      .prepare(
-        `UPDATE observer_deliveries
+    this.mutate(
+      () => this.readTotals("delivery_id = ?", [deliveryId]),
+      () => {
+        const result = this.db
+          .prepare(
+            `UPDATE observer_deliveries
          SET state = ?, state_reason = ?, completed_at = ?, updated_at = ?
          WHERE delivery_id = ? AND state = 'processing'`,
-      )
-      .run(state, reason, completedAt, completedAt, deliveryId);
-    if (Number(result.changes) !== 1) {
-      throw new Error(`Observer delivery ${deliveryId} is not being processed`);
-    }
-    this.revision += 1;
+          )
+          .run(state, reason, completedAt, completedAt, deliveryId);
+        if (Number(result.changes) !== 1) {
+          throw new Error(`Observer delivery ${deliveryId} is not being processed`);
+        }
+      },
+    );
     this.prunePayloads(completedAt);
   }
 
@@ -465,43 +566,46 @@ export class ObserverInboxRepository {
     if (Date.parse(nextAttemptAt) <= Date.parse(retriedAt)) {
       throw new Error("Observer delivery next attempt must be after the retry time");
     }
-    const result = this.db
-      .prepare(
-        `UPDATE observer_deliveries
+    this.mutate(
+      () => ({}), // processing -> pending changes no lifetime counters or timestamps
+      () => {
+        const result = this.db
+          .prepare(
+            `UPDATE observer_deliveries
          SET state = 'observer-claimed', state_reason = ?, next_attempt_at = ?, updated_at = ?
          WHERE delivery_id = ? AND state = 'processing'`,
-      )
-      .run(reason, nextAttemptAt, retriedAt, deliveryId);
-    if (Number(result.changes) !== 1) {
-      throw new Error(`Observer delivery ${deliveryId} is not being processed`);
-    }
-    this.revision += 1;
+          )
+          .run(reason, nextAttemptAt, retriedAt, deliveryId);
+        if (Number(result.changes) !== 1) {
+          throw new Error(`Observer delivery ${deliveryId} is not being processed`);
+        }
+      },
+    );
   }
 
   status(): ObserverInboxStatus {
-    // Mutations on this connection invalidate synchronously; data_version detects writes from
-    // another connection. Repeated GETs do not aggregate the delivery history again.
-    const dataVersion = Number(this.db.prepare("PRAGMA data_version").get()?.data_version);
+    // Own writes update totals after commit; external writes require a lazy rebuild.
+    const dataVersion = this.dataVersion();
     if (
       this.retainedStatus?.revision === this.revision &&
       this.retainedStatus.dataVersion === dataVersion
     ) {
       return structuredClone(this.retainedStatus.value);
     }
-    const value = this.readStatus();
+    if (this.retainedTotals?.dataVersion !== dataVersion)
+      this.retainedTotals = { dataVersion, value: this.readTotals() };
+    const value = this.readStatus(this.retainedTotals.value);
     this.retainedStatus = { revision: this.revision, dataVersion, value };
     return structuredClone(value);
   }
 
-  private readStatus(): ObserverInboxStatus {
-    const totals = z
+  private readTotals(where?: string, bindings: SQLInputValue[] = []): InboxTotals {
+    return z
       .object({
         unique_deliveries: z.number().int().nonnegative(),
         delivery_attempts: z.number().int().nonnegative(),
         processing_attempts: z.number().int().nonnegative(),
         duplicates: z.number().int().nonnegative(),
-        queue_depth: z.number().int().nonnegative(),
-        processing: z.number().int().nonnegative(),
         node_verified: z.number().int().nonnegative(),
         quarantined: z.number().int().nonnegative(),
         expired: z.number().int().nonnegative(),
@@ -509,7 +613,6 @@ export class ObserverInboxRepository {
         pruned_payloads: z.number().int().nonnegative(),
         last_received_at: z.string().nullable(),
         last_processed_at: z.string().nullable(),
-        oldest_pending_at: z.string().nullable(),
       })
       .parse(
         this.db
@@ -519,8 +622,6 @@ export class ObserverInboxRepository {
               COALESCE(SUM(delivery_attempts), 0) AS delivery_attempts,
               COALESCE(SUM(processing_attempts), 0) AS processing_attempts,
               COALESCE(SUM(delivery_attempts - 1), 0) AS duplicates,
-              COALESCE(SUM(state = 'observer-claimed'), 0) AS queue_depth,
-              COALESCE(SUM(state = 'processing'), 0) AS processing,
               COALESCE(SUM(state = 'node-verified'), 0) AS node_verified,
               COALESCE(SUM(state = 'quarantined'), 0) AS quarantined,
               COALESCE(SUM(state = 'expired'), 0) AS expired,
@@ -528,13 +629,15 @@ export class ObserverInboxRepository {
                 AS retained_payload_bytes,
               COALESCE(SUM(payload_pruned), 0) AS pruned_payloads,
               MAX(last_received_at) AS last_received_at,
-              MAX(last_processing_at) AS last_processed_at,
-              MIN(CASE WHEN state = 'observer-claimed' THEN first_received_at END)
-                AS oldest_pending_at
-             FROM observer_deliveries`,
+              MAX(last_processing_at) AS last_processed_at
+             FROM observer_deliveries${where ? ` WHERE ${where}` : ""}`,
           )
-          .get(),
+          .get(...bindings),
       );
+  }
+
+  private readStatus(totals: InboxTotals): ObserverInboxStatus {
+    const operational = this.operationalStatus();
     const stacks = z
       .object({
         claimed_block_height: z.number().int().nonnegative(),
@@ -573,6 +676,76 @@ export class ObserverInboxRepository {
           )
           .get() ?? null,
       );
+    const quarantine = z
+      .object({
+        endpoint_kind: z.enum(["new-block", "new-burn-block", "attachments"]),
+        state_reason: z.string().min(1),
+        last_received_at: z.string(),
+      })
+      .nullable()
+      .parse(
+        this.db
+          .prepare(
+            `SELECT endpoint_kind, state_reason, last_received_at
+             FROM observer_deliveries INDEXED BY observer_latest_quarantine
+             WHERE state = 'quarantined' AND state_reason IS NOT NULL
+             ORDER BY last_received_at DESC, delivery_id DESC
+             LIMIT 1`,
+          )
+          .get() ?? null,
+      );
+    return {
+      schemaVersion: 1,
+      uniqueDeliveries: totals.unique_deliveries,
+      deliveryAttempts: totals.delivery_attempts,
+      processingAttempts: totals.processing_attempts,
+      duplicates: totals.duplicates,
+      ...operational,
+      nodeVerified: totals.node_verified,
+      quarantined: totals.quarantined,
+      expired: totals.expired,
+      retainedPayloadBytes: totals.retained_payload_bytes,
+      prunedPayloads: totals.pruned_payloads,
+      lastReceivedAt: totals.last_received_at,
+      lastProcessedAt: totals.last_processed_at,
+      lastClaimedStacksBlock: stacks
+        ? {
+            height: stacks.claimed_block_height,
+            blockHash: stacks.claimed_block_hash,
+            indexBlockHash: stacks.claimed_index_block_hash,
+          }
+        : null,
+      lastClaimedBurnBlock: burn
+        ? { height: burn.claimed_burn_block_height, blockHash: burn.claimed_burn_block_hash }
+        : null,
+      lastQuarantine: quarantine
+        ? {
+            endpointKind: quarantine.endpoint_kind,
+            reason: quarantine.state_reason,
+            receivedAt: quarantine.last_received_at,
+          }
+        : null,
+    };
+  }
+
+  /** Fresh operational evidence without hydrating any lifetime counters. */
+  operationalStatus(): ObserverInboxOperationalStatus {
+    const pending = z
+      .object({
+        queue_depth: z.number().int().nonnegative(),
+        processing: z.number().int().nonnegative(),
+        oldest_pending_at: z.string().nullable(),
+      })
+      .parse(
+        this.db
+          .prepare(`SELECT
+      COALESCE(SUM(state = 'observer-claimed'), 0) AS queue_depth,
+      COALESCE(SUM(state = 'processing'), 0) AS processing,
+      MIN(CASE WHEN state = 'observer-claimed' THEN first_received_at END) AS oldest_pending_at
+      FROM observer_deliveries INDEXED BY observer_deliveries_pending
+      WHERE state IN ('observer-claimed', 'processing')`)
+          .get(),
+      );
     const verifiedStacks = z
       .object({
         claimed_block_height: z.number().int().nonnegative(),
@@ -586,7 +759,7 @@ export class ObserverInboxRepository {
           .prepare(
             `SELECT claimed_block_height, claimed_index_block_hash,
                     first_received_at, completed_at
-             FROM observer_deliveries
+             FROM observer_deliveries INDEXED BY observer_latest_verified
              WHERE state = 'node-verified'
                AND claimed_block_height IS NOT NULL
                AND claimed_index_block_hash IS NOT NULL
@@ -596,63 +769,16 @@ export class ObserverInboxRepository {
           )
           .get() ?? null,
       );
-    const quarantine = z
-      .object({
-        endpoint_kind: z.enum(["new-block", "new-burn-block", "attachments"]),
-        state_reason: z.string().min(1),
-        last_received_at: z.string(),
-      })
-      .nullable()
-      .parse(
-        this.db
-          .prepare(
-            `SELECT endpoint_kind, state_reason, last_received_at
-             FROM observer_deliveries
-             WHERE state = 'quarantined' AND state_reason IS NOT NULL
-             ORDER BY last_received_at DESC, delivery_id DESC
-             LIMIT 1`,
-          )
-          .get() ?? null,
-      );
     return {
-      schemaVersion: 1,
-      uniqueDeliveries: totals.unique_deliveries,
-      deliveryAttempts: totals.delivery_attempts,
-      processingAttempts: totals.processing_attempts,
-      duplicates: totals.duplicates,
-      queueDepth: totals.queue_depth,
-      processing: totals.processing,
-      nodeVerified: totals.node_verified,
-      quarantined: totals.quarantined,
-      expired: totals.expired,
-      retainedPayloadBytes: totals.retained_payload_bytes,
-      prunedPayloads: totals.pruned_payloads,
-      lastReceivedAt: totals.last_received_at,
-      lastProcessedAt: totals.last_processed_at,
-      oldestPendingAt: totals.oldest_pending_at,
-      lastClaimedStacksBlock: stacks
-        ? {
-            height: stacks.claimed_block_height,
-            blockHash: stacks.claimed_block_hash,
-            indexBlockHash: stacks.claimed_index_block_hash,
-          }
-        : null,
+      queueDepth: pending.queue_depth,
+      processing: pending.processing,
+      oldestPendingAt: pending.oldest_pending_at,
       lastVerifiedStacksBlock: verifiedStacks
         ? {
             height: verifiedStacks.claimed_block_height,
             indexBlockHash: verifiedStacks.claimed_index_block_hash,
             receivedAt: verifiedStacks.first_received_at,
             verifiedAt: verifiedStacks.completed_at,
-          }
-        : null,
-      lastClaimedBurnBlock: burn
-        ? { height: burn.claimed_burn_block_height, blockHash: burn.claimed_burn_block_hash }
-        : null,
-      lastQuarantine: quarantine
-        ? {
-            endpointKind: quarantine.endpoint_kind,
-            reason: quarantine.state_reason,
-            receivedAt: quarantine.last_received_at,
           }
         : null,
     };

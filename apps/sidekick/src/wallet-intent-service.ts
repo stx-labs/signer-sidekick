@@ -509,11 +509,12 @@ export class WalletIntentService {
 
   /** Called by server maintenance; never prepares, signs, replaces, or resumes work. */
   async observeSubmitted(observedAt = new Date().toISOString()): Promise<void> {
-    const intents = this.options.store.walletIntents.listAwaitingObservation();
-    this.observationCadence.retain(intents.map(({ id }) => id));
-    for (const intent of intents) {
-      if (!this.observationCadence.isDue(intent.id, Date.parse(observedAt))) continue;
+    const ids = this.options.store.walletIntents.listAwaitingObservationIds();
+    this.observationCadence.retain(ids);
+    for (const id of ids) {
+      if (!this.observationCadence.isDue(id, Date.parse(observedAt))) continue;
       try {
+        const intent = this.requireStored(id);
         // Each durable ID owns its cadence. Historical siblings are independently observed;
         // recursively refreshing them here would bypass their missing-transaction backoff.
         await this.refreshStored(intent, observedAt);

@@ -304,6 +304,40 @@ test("shows the prior cycle in history while its last distribution remains pendi
   await expect(history.getByRole("tab", { name: /Second Distribution/ })).toBeVisible();
 });
 
+test("pages older reward cycles without dropping the current distribution", async ({ page }) => {
+  const cursors: (string | null)[] = [];
+  await overrideFixtures(page, (request) => {
+    if (request.pathname !== "/api/v1/rewards/ledger" || request.searchParams.has("cycle"))
+      return undefined;
+    const ledger = structuredClone(responseFor(request.href)) as RewardLedger;
+    const before = request.searchParams.get("beforeCycle");
+    cursors.push(before);
+    const historical = structuredClone(ledger.cycles.at(-1));
+    if (!historical) throw new Error("Expected a historical cycle fixture");
+    const cycle = before === null ? 100 : 99;
+    historical.cycle = cycle;
+    for (const distribution of historical.distributions) distribution.cycle = cycle;
+    ledger.cycles = [...ledger.cycles.filter((item) => item.cycle >= 139), historical];
+    ledger.pagination = { nextBeforeCycle: before === null ? 100 : null };
+    ledger.fees.indexedPaymentCount = 100_001;
+    return ledger;
+  });
+  await login(page);
+  await openPage(page, "rewards", "Rewards");
+  const history = page.getByRole("region", { name: "Past cycles" });
+  await expect(page.getByText("Export all history", { exact: true })).toBeVisible();
+  await expect(history.getByRole("row", { name: "Cycle 100", exact: true })).toBeVisible();
+  const navigation = page.getByRole("navigation", { name: "Reward history pagination" });
+  await navigation.getByRole("button", { name: "Older cycles" }).click();
+  await expect(history.getByRole("row", { name: "Cycle 99", exact: true })).toBeVisible();
+  await expect(history.getByRole("row", { name: "Cycle 100", exact: true })).toHaveCount(0);
+  await expect(page.locator(".rw-now").getByText("Cycle 140 · First Distribution")).toBeVisible();
+  await expect(navigation.getByRole("button", { name: "Older cycles" })).toBeDisabled();
+  await navigation.getByRole("button", { name: "Newer cycles" }).click();
+  await expect(history.getByRole("row", { name: "Cycle 100", exact: true })).toBeVisible();
+  expect(cursors).toContain("100");
+});
+
 test("shows collected rounding separately from complete fees and keeps covered history closed", async ({
   page,
 }) => {
@@ -3115,6 +3149,83 @@ test("pages multi-year reward history and loads payments on demand", async ({ pa
   const panel = page.locator(".rw-ledger-panel");
   await expect(panel.getByRole("tab", { name: /First Distribution/ })).toBeVisible();
   await expect(panel.getByRole("tab", { name: /Paid · 40/ })).toBeVisible();
+});
+
+test("keeps expanded reward projections and network facts inside their cards", async ({
+  page,
+}, testInfo) => {
+  const outlook = structuredClone(snapshot.rewardOutlook);
+  outlook.calculation.next.targetRewardCycle = 140;
+  outlook.forecast.targetRewardCycle = 140;
+  outlook.poolEstimate.targetRewardCycle = 140;
+  outlook.accrued.globalSats = "181000000";
+  outlook.forecast.globalSats = { low: "200000000", point: "231000000", high: "260000000" };
+  outlook.forecast.poolSats = { low: "1300000", point: "1680000", high: "3610000" };
+  outlook.poolEstimate.grossSats = "1300000";
+  outlook.poolEstimate.stxSats = "1300000";
+  outlook.poolEstimate.bondSats = "0";
+  await overrideFixtures(page, (request) => {
+    const body = responseFor(request.href);
+    if (request.pathname === "/api/v1/status" || request.pathname === "/api/v1/rewards")
+      return { ...body, rewardOutlook: outlook };
+    return body;
+  });
+  await login(page);
+  await openPage(page, "rewards", "Rewards");
+  await expect(page.locator('[data-earning-fact="network"]')).toContainText("2.31 sBTC projected");
+  const details = page.locator("#rewards-outlook");
+  await details.locator("summary").click();
+  await expect(details.getByRole("heading", { name: "This projection" })).toBeVisible();
+  await page.evaluate(() => document.fonts.ready);
+
+  const original = page.viewportSize();
+  if (!original) throw new Error("A viewport is required for the responsive layout test");
+  const widths = original.width <= 640 ? [390, 320, 375, 430, 640] : [original.width];
+  for (const width of widths) {
+    await page.setViewportSize({ width, height: original.height });
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth))
+      .toBeLessThanOrEqual(1);
+    const overflow = await details.evaluate((card) => {
+      const bounds = card.getBoundingClientRect();
+      return [...card.querySelectorAll(".statline .k, .statline .v, .rw-accuracy")]
+        .filter((element) => {
+          const rect = element.getBoundingClientRect();
+          return (
+            rect.left < bounds.left ||
+            rect.right > bounds.right ||
+            (element.classList.contains("v") && element.scrollWidth > element.clientWidth + 1)
+          );
+        })
+        .map((element) => element.textContent);
+    });
+    expect(overflow, `projection content at ${width}px`).toEqual([]);
+    if (width <= 640) {
+      for (const row of await details.locator(".statline").all()) {
+        const label = await row.locator(".k").boundingBox();
+        const value = await row.locator(".v").boundingBox();
+        if (!label || !value) throw new Error("Projection label and value must be visible");
+        expect(value.y).toBeGreaterThanOrEqual(label.y + label.height);
+      }
+      const network = page.locator('[data-earning-fact="network"]');
+      const label = await network.locator("dt").boundingBox();
+      const value = await network.locator("dd").boundingBox();
+      if (!label || !value) throw new Error("Network reward label and value must be visible");
+      expect(value.y).toBeGreaterThanOrEqual(label.y + label.height);
+      expect(label.width).toBeGreaterThan(width / 2);
+      expect(
+        await network
+          .locator("dd")
+          .evaluate((element) => element.scrollWidth - element.clientWidth),
+      ).toBeLessThanOrEqual(1);
+    }
+    if (width === 390) {
+      await details.screenshot({ path: testInfo.outputPath("mobile-projection-details.png") });
+      await page
+        .locator(".rw-earning")
+        .screenshot({ path: testInfo.outputPath("mobile-earning-card.png") });
+    }
+  }
 });
 
 test("keeps a completed current-cycle distribution accessible during the second half", async ({

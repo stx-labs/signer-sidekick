@@ -2082,11 +2082,17 @@ describe("manager wallet action preparation", () => {
       expect(result.verification?.detail).toContain("sealed cycle and checkpoint");
       const countBefore = details.mock.calls.length;
       const first = h.store.walletIntents.latestObservation(h.prepared.id);
+      const hydrate = vi.spyOn(h.store.walletIntents, "get");
+      const allManifests = vi.spyOn(h.store.walletIntents, "listAwaitingObservation");
       const startAt = Date.parse("2026-07-19T12:04:00.000Z");
       const at = (seconds: number) => new Date(startAt + seconds * 1000).toISOString();
       for (let seconds = 0; seconds < 3600; seconds += 5)
         await wallet.observeSubmitted(at(seconds));
       expect(details).toHaveBeenCalledTimes(countBefore + 15);
+      expect(allManifests).not.toHaveBeenCalled();
+      expect(hydrate.mock.calls.length).toBeLessThan(100); // 720 scans, only 15 due reads
+      hydrate.mockRestore();
+      allManifests.mockRestore();
       expect(h.store.walletIntents.latestObservation(h.prepared.id)?.id).toBe(first?.id);
       expect(wallet.get(h.prepared.id)).toMatchObject({
         status: "confirmed",

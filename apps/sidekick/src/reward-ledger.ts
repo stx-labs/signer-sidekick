@@ -46,21 +46,32 @@ const registryLookupConcurrency = 8;
 export type RewardLedgerDistributionIndex = 1 | 2;
 
 export interface RewardLedgerStore {
+  listRewardLedgerCycles?(
+    chainId: number,
+    managerPrincipal: string,
+    pox5ContractId: string | null,
+    options?: { beforeCycle?: number | null; limit?: number; liveCycles?: readonly number[] },
+  ): { cycles: number[]; nextBeforeCycle: number | null };
   listRewardCalculationRealizations(
     managerPrincipal: string,
     pox5ContractId: string,
-    options?: { limit?: number; canonicalOnly?: boolean },
+    options?: { limit?: number; canonicalOnly?: boolean; cycles?: readonly number[] },
   ): StoredRewardCalculationRealization[];
   listPox5RewardPrints(
     chainId: number,
     pox5ContractId: string,
     managerPrincipal: string,
-    options?: { kinds?: readonly StoredPox5RewardPrint["kind"][]; limit?: number },
+    options?: {
+      kinds?: readonly StoredPox5RewardPrint["kind"][];
+      limit?: number;
+      cycles?: readonly number[];
+    },
   ): StoredPox5RewardPrint[];
   listManagerClaimRecords(
     chainId: number,
     managerPrincipal: string,
     limit?: number,
+    options?: { cycles?: readonly number[] },
   ): StoredManagerClaim[];
   getManagerRewardFeeTotals?(
     chainId: number,
@@ -71,6 +82,7 @@ export interface RewardLedgerStore {
     chainId: number,
     managerPrincipal: string,
     limit?: number,
+    options?: { cycles?: readonly number[] },
   ): StoredManagerWithdrawal[];
   listManagerTopicEvents(
     chainId: number,
@@ -176,6 +188,7 @@ export interface WithdrawalRegistryEvidence {
 }
 
 export interface RewardLedgerQuery {
+  beforeCycle?: number | null;
   cycle?: number | null;
   distribution?: RewardLedgerDistributionIndex | null;
   staker?: string | null;
@@ -192,6 +205,7 @@ export interface BuildRewardLedgerInput {
   snapshot: RewardLedgerSnapshotInput;
   /** Transaction IDs Sidekick itself produced (wallet intents, engine attempts). */
   ownedTxids: ReadonlySet<string>;
+  ownedTransactionIds?: (ids: readonly string[]) => ReadonlySet<string>;
   /** sBTC registry status for a manager-side pending request; omit when no registry is known. */
   withdrawalRequestStatus?: (requestId: string) => Promise<WithdrawalRegistryStatus>;
   /** Batched node-first status and durable Bitcoin sweep evidence for relevant L1 payouts. */
@@ -419,6 +433,7 @@ export function previousCycleOpen(
     .listRewardCalculationRealizations(input.managerPrincipal, input.pox5ContractId, {
       limit: 500,
       canonicalOnly: true,
+      cycles: [input.cycle],
     })
     .filter((realization) => realization.targetRewardCycle === input.cycle)
     .sort((left, right) => left.blockHeight - right.blockHeight);
@@ -429,6 +444,7 @@ export function previousCycleOpen(
     .listPox5RewardPrints(input.chainId, input.pox5ContractId, input.managerPrincipal, {
       kinds: ["claim-rewards"],
       limit: maximumEvidenceRows,
+      cycles: [input.cycle],
     })
     .filter(
       (print) =>
@@ -440,7 +456,9 @@ export function previousCycleOpen(
   if (poolSats > collected) return true;
   const paidAfterLatest = new Set(
     store
-      .listManagerClaimRecords(input.chainId, input.managerPrincipal, maximumEvidenceRows)
+      .listManagerClaimRecords(input.chainId, input.managerPrincipal, maximumEvidenceRows, {
+        cycles: [input.cycle],
+      })
       .filter(
         (claim) =>
           Number(claim.rewardCycle) === input.cycle && claim.blockHeight >= latest.blockHeight,
@@ -455,7 +473,7 @@ export function previousCycleOpen(
 }
 
 export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<RewardLedger> {
-  const { store, chainId, managerPrincipal, pox5ContractId, snapshot, ownedTxids } = input;
+  const { store, chainId, managerPrincipal, pox5ContractId, snapshot } = input;
   const query = input.query ?? {};
   const scope: "selection" | "all" = query.scope === "all" ? "all" : "selection";
   const rewards = snapshot.rewards ?? null;
@@ -493,13 +511,41 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
     (recoveryStatus(recovery.managerHistory.status) !== "complete" ||
       recoveryStatus(recovery.currentMemberHistory.status) !== "complete");
 
-  // --- evidence reads (all bounded) ---
-  const realizations = pox5ContractId
+  // Select periods BEFORE reading their attribution evidence. A chosen old cycle never
+  // competes with newer payments for a global window. Legacy test/store adapters may omit paging.
+  const cyclePage = store.listRewardLedgerCycles
+    ? query.cycle != null && scope === "selection"
+      ? { cycles: [query.cycle], nextBeforeCycle: null }
+      : store.listRewardLedgerCycles(chainId, managerPrincipal, pox5ContractId, {
+          beforeCycle: query.beforeCycle ?? null,
+          limit: scope === "all" ? 1 : 20,
+          liveCycles: [...liveStatuses.keys(), ...(currentCycle === null ? [] : [currentCycle])],
+        })
+    : null;
+  const includeLive = scope !== "all" && (query.cycle == null || cyclePage === null);
+  const readCycles = cyclePage
+    ? query.cycle != null && scope === "selection"
+      ? [query.cycle]
+      : [
+          ...new Set([
+            ...cyclePage.cycles,
+            ...(includeLive
+              ? [...liveStatuses.keys(), ...(currentCycle === null ? [] : [currentCycle])]
+              : []),
+          ]),
+        ]
+    : undefined;
+  const periodOptions = readCycles ? { cycles: readCycles } : {};
+  // --- evidence reads (bounded within the requested periods) ---
+  const realizationsRead = pox5ContractId
     ? store.listRewardCalculationRealizations(managerPrincipal, pox5ContractId, {
-        limit: 500,
+        limit: 501,
         canonicalOnly: true,
+        ...periodOptions,
       })
     : [];
+  const realizationsTruncated = realizationsRead.length > 500;
+  const realizations = realizationsRead.slice(0, 500);
   const maximumRequestedEvidence =
     scope === "all" ? maximumExportEvidenceRows : maximumEvidenceRows;
   const evidenceLimit = Math.max(
@@ -509,28 +555,45 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
   const printsRead = pox5ContractId
     ? store.listPox5RewardPrints(chainId, pox5ContractId, managerPrincipal, {
         limit: evidenceLimit + 1,
+        ...periodOptions,
       })
     : [];
-  const claimsRead = store.listManagerClaimRecords(chainId, managerPrincipal, evidenceLimit + 1);
+  const claimsRead = store.listManagerClaimRecords(
+    chainId,
+    managerPrincipal,
+    evidenceLimit + 1,
+    periodOptions,
+  );
   // Stores return the newest rows oldest-first; one extra row proves truncation. Drop the oldest so
   // the retained window is exactly `evidenceLimit` rows, and remember where it starts.
   const printsTruncated = printsRead.length > evidenceLimit;
   const claimsTruncated = claimsRead.length > evidenceLimit;
   const prints = printsTruncated ? printsRead.slice(printsRead.length - evidenceLimit) : printsRead;
   const claims = claimsTruncated ? claimsRead.slice(claimsRead.length - evidenceLimit) : claimsRead;
+  const ownedTxids =
+    input.ownedTransactionIds?.([
+      ...new Set([
+        ...claims.map((row) => row.txId),
+        ...prints.map((row) => row.txId),
+        ...realizations.map((row) => row.txId),
+      ]),
+    ]) ?? input.ownedTxids;
   const oldestRetainedBlockHeight = Math.max(
+    realizationsTruncated ? Math.min(...realizations.map((row) => row.blockHeight)) : -1,
     printsTruncated ? (prints[0]?.blockHeight ?? 0) : -1,
     claimsTruncated ? (claims[0]?.blockHeight ?? 0) : -1,
   );
   const evidenceWindow: RewardLedger["evidenceWindow"] = {
-    truncated: printsTruncated || claimsTruncated,
+    truncated: printsTruncated || claimsTruncated || realizationsTruncated,
     oldestRetainedBlockHeight:
-      printsTruncated || claimsTruncated ? Math.max(0, oldestRetainedBlockHeight) : null,
+      printsTruncated || claimsTruncated || realizationsTruncated
+        ? Math.max(0, oldestRetainedBlockHeight)
+        : null,
     limit: evidenceLimit,
   };
   const withdrawals = new Map(
     store
-      .listManagerWithdrawalRecords(chainId, managerPrincipal, evidenceLimit + 1)
+      .listManagerWithdrawalRecords(chainId, managerPrincipal, evidenceLimit + 1, periodOptions)
       .map((withdrawal) => [withdrawal.requestId, withdrawal] as const),
   );
   const registryStatus = new Map<string, WithdrawalRegistryStatus>();
@@ -545,6 +608,7 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
       ),
     );
     if (query.cycle !== null && query.cycle !== undefined) liveCycles.add(query.cycle);
+    if (scope === "all") for (const cycle of readCycles ?? []) liveCycles.add(cycle);
     if (liveCycles.size === 0) {
       for (const cycle of claims
         .map(({ rewardCycle }) => Number(rewardCycle))
@@ -631,11 +695,12 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
   // --- cycle universe: everything with evidence plus the live cycle, newest first ---
   const cycleIds = [
     ...new Set<number>([
+      ...(cyclePage?.cycles ?? []),
       ...calculationsByCycle.keys(),
       ...collectsByCycle.keys(),
       ...claimsByCycle.keys(),
-      ...liveStatuses.keys(),
-      ...(currentCycle === null ? [] : [currentCycle]),
+      ...(includeLive ? liveStatuses.keys() : []),
+      ...(includeLive && currentCycle !== null ? [currentCycle] : []),
       ...(query.cycle === null || query.cycle === undefined ? [] : [query.cycle]),
     ]),
   ]
@@ -1295,8 +1360,14 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
     historyComplete && balance !== null && earnedIndexed >= big(balance)
       ? text(earnedIndexed - big(balance))
       : null;
-  const refunds = store
-    .listManagerTopicEvents(chainId, managerPrincipal, "sweep-fee-refunds", 1_000)
+  const refundEvents = store.listManagerTopicEvents(
+    chainId,
+    managerPrincipal,
+    "sweep-fee-refunds",
+    1_001,
+  );
+  const refunds = refundEvents
+    .slice(0, 1_000)
     .map((event) => ({ txId: event.txId, blockHeight: event.blockHeight, amountSats: null }));
 
   const anchor = snapshot.chainAnchor ?? null;
@@ -1320,6 +1391,7 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
       currentMemberHistory: recoveryStatus(recovery?.currentMemberHistory.status),
     },
     evidenceWindow,
+    ...(cyclePage ? { pagination: { nextBeforeCycle: cyclePage.nextBeforeCycle } } : {}),
     current: {
       cycle: current?.cycle ?? currentCycle,
       distribution: current?.distribution ?? null,
@@ -1339,6 +1411,7 @@ export async function buildRewardLedger(input: BuildRewardLedgerInput): Promise<
       historyComplete,
       balanceInManagerSats: balance,
       withdrawnDerivedSats: withdrawnDerived,
+      refundsTruncated: refundEvents.length > 1_000,
       refunds,
     },
     query: {
@@ -1511,7 +1584,10 @@ export interface RewardLedgerFeeRow {
 }
 
 /** Fee accounting rows shared by the CSV and JSON fee exports (plan §9). */
-export function rewardLedgerFeeRows(ledger: RewardLedger): RewardLedgerFeeRow[] {
+export function rewardLedgerFeeRows(
+  ledger: RewardLedger,
+  includeSummary = true,
+): RewardLedgerFeeRow[] {
   const feeRows: RewardLedgerFeeRow[] = ledger.payments
     .filter((p) => p.paymentTxId !== null && p.operatorFeeSats !== null)
     .map((p) => ({
@@ -1525,6 +1601,7 @@ export function rewardLedgerFeeRows(ledger: RewardLedger): RewardLedgerFeeRow[] 
       blockHeight: p.paymentBlockHeight,
       note: "credited in the manager as the payment was distributed",
     }));
+  if (!includeSummary) return feeRows;
   const refundRows: RewardLedgerFeeRow[] = ledger.fees.refunds.map((r) => ({
     kind: "fee-refund-sweep",
     cycle: null,
@@ -1572,7 +1649,7 @@ export function rewardLedgerFeeRows(ledger: RewardLedger): RewardLedgerFeeRow[] 
   ];
 }
 
-export function rewardLedgerFeesCsv(ledger: RewardLedger): string {
+export function rewardLedgerFeesCsv(ledger: RewardLedger, includeSummary = true): string {
   const header = [
     "kind",
     "cycle",
@@ -1584,7 +1661,7 @@ export function rewardLedgerFeesCsv(ledger: RewardLedger): string {
     "block_height",
     "note",
   ];
-  const rows = rewardLedgerFeeRows(ledger).map((row) => [
+  const rows = rewardLedgerFeeRows(ledger, includeSummary).map((row) => [
     row.kind,
     row.cycle,
     row.distribution,

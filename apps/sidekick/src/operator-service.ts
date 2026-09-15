@@ -1144,6 +1144,7 @@ export class OperatorService {
       query.distribution ?? null,
       query.staker ?? null,
       query.scope ?? "selection",
+      query.beforeCycle ?? null,
     ]);
     const cached = this.rewardLedgerCache.get(cacheKey);
     if (cached) return cached;
@@ -1174,7 +1175,8 @@ export class OperatorService {
         pox5ContractId,
         sourceId,
         snapshot: snapshotInput,
-        ownedTxids: this.ownedTransactionIds(),
+        ownedTxids: new Set(),
+        ownedTransactionIds: (ids) => this.options.store.ownedTransactionIds(ids),
         now: new Date(),
         query,
         ...(registry
@@ -1214,16 +1216,13 @@ export class OperatorService {
 
   private readonly rewardLedgerCache = new Map<string, RewardLedger>();
   private readonly rewardLedgerReads = new Map<string, Promise<RewardLedger>>();
-
-  /** Transaction IDs Sidekick produced itself, without hydrating historical plans or manifests. */
-  private ownedTransactionIds(): Set<string> {
-    const owned = new Set<string>();
-    for (const txid of this.options.store.walletIntents.listOwnedTransactionIds()) owned.add(txid);
-    for (const txid of this.options.store.transactionEngine.listOwnedTransactionIds())
-      owned.add(txid);
-    for (const txid of this.options.store.rewardRuns.listOwnedTransactionIds()) owned.add(txid);
-    return owned;
-  }
+  private readonly withdrawalEvidenceReads = new Map<
+    string,
+    {
+      expiresAt: number;
+      value: Promise<[string, WithdrawalRegistryEvidence]>;
+    }
+  >();
 
   /**
    * Read current registry state and persist the node-readable Bitcoin sweep proof. The manager's
@@ -1260,43 +1259,71 @@ export class OperatorService {
               },
             ];
           }
-          try {
-            const status = await this.withdrawalRequestStatus(registryContract, requestId, tip);
-            if (status !== "accepted") return [requestId, { status, completion: null }];
+          const key = JSON.stringify([
+            chainId,
+            config.nodeRpcUrl,
+            this.options.managerPrincipal,
+            registryContract,
+            requestId,
+            tip ?? null,
+          ]);
+          const now = this.currentTime();
+          const cached = this.withdrawalEvidenceReads.get(key);
+          if (cached && cached.expiresAt > now) return cached.value;
+          const read = async (): Promise<[string, WithdrawalRegistryEvidence]> => {
             try {
-              const value = await this.options.node.callReadOnly(
-                registryContract,
-                "get-completed-withdrawal-sweep-data",
-                this.options.managerPrincipal,
-                [encodeUIntHex(BigInt(requestId))],
-                tip ? { tip } : undefined,
-              );
-              const completion = decodeSbtcWithdrawalCompletion(value);
-              if (!completion) return [requestId, { status, completion: null }];
-              const persisted = this.options.store.sbtcWithdrawalCompletions.upsert({
-                chainId,
-                registryContract,
-                requestId,
-                ...completion,
-                observedAt,
-              });
-              return [
-                requestId,
-                {
-                  status,
-                  completion: {
-                    sweepTxId: persisted.sweepTxId,
-                    bitcoinBlockHeight: persisted.bitcoinBlockHeight,
-                    bitcoinBlockHash: persisted.bitcoinBlockHash,
+              const status = await this.withdrawalRequestStatus(registryContract, requestId, tip);
+              if (status !== "accepted") return [requestId, { status, completion: null }];
+              try {
+                const value = await this.options.node.callReadOnly(
+                  registryContract,
+                  "get-completed-withdrawal-sweep-data",
+                  this.options.managerPrincipal,
+                  [encodeUIntHex(BigInt(requestId))],
+                  tip ? { tip } : undefined,
+                );
+                const completion = decodeSbtcWithdrawalCompletion(value);
+                if (!completion) return [requestId, { status, completion: null }];
+                const persisted = this.options.store.sbtcWithdrawalCompletions.upsert({
+                  chainId,
+                  registryContract,
+                  requestId,
+                  ...completion,
+                  observedAt,
+                });
+                return [
+                  requestId,
+                  {
+                    status,
+                    completion: {
+                      sweepTxId: persisted.sweepTxId,
+                      bitcoinBlockHeight: persisted.bitcoinBlockHeight,
+                      bitcoinBlockHash: persisted.bitcoinBlockHash,
+                    },
                   },
-                },
-              ];
+                ];
+              } catch {
+                return [requestId, { status, completion: null }];
+              }
             } catch {
-              return [requestId, { status, completion: null }];
+              return [requestId, { status: "unknown", completion: null }];
             }
-          } catch {
-            return [requestId, { status: "unknown", completion: null }];
+          };
+          // A shared display read owns its deadline; cancellation of one page cannot cancel another.
+          // Transaction preparation still uses the uncached withdrawalRequestStatus path below.
+          const pending = withInteractiveRequestDeadline(
+            INTERACTIVE_REQUEST_DEADLINE_MS,
+            read,
+          ).catch((): [string, WithdrawalRegistryEvidence] => [
+            requestId,
+            { status: "unknown", completion: null },
+          ]);
+          if (this.withdrawalEvidenceReads.size >= 256) {
+            const oldest = this.withdrawalEvidenceReads.keys().next().value;
+            if (oldest !== undefined) this.withdrawalEvidenceReads.delete(oldest);
           }
+          this.withdrawalEvidenceReads.set(key, { expiresAt: now + 30_000, value: pending });
+          return pending;
         }),
       );
       for (const [requestId, value] of evidence) result.set(requestId, value);

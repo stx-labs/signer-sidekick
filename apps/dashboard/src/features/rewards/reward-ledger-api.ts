@@ -2,6 +2,7 @@ import { type RewardLedger, rewardLedgerSchema } from "@stx-labs/signer-sidekick
 import { apiDownload, apiJson } from "../../api-client.js";
 
 export interface RewardLedgerQuery {
+  beforeCycle?: number | null;
   cycle?: number | null;
   distribution?: 1 | 2 | null;
   staker?: string | null;
@@ -10,6 +11,7 @@ export interface RewardLedgerQuery {
 
 export function rewardLedgerSearch(query: RewardLedgerQuery): string {
   const search = new URLSearchParams();
+  if (query.beforeCycle != null) search.set("beforeCycle", String(query.beforeCycle));
   if (query.cycle !== null && query.cycle !== undefined) search.set("cycle", String(query.cycle));
   if (query.distribution !== null && query.distribution !== undefined) {
     search.set("distribution", String(query.distribution));
