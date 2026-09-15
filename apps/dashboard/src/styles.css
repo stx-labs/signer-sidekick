@@ -3752,8 +3752,18 @@ td .rw-txid {
 .rw-details-body {
   padding: 0 20px 20px;
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 24px;
+}
+.rw-details-body > div,
+.rw-details-body .statline > span {
+  min-width: 0;
+}
+.rw-details-body .statline {
+  gap: 12px;
+}
+.rw-accuracy {
+  overflow-x: auto;
 }
 .rw-details-body h4 {
   margin: 0 0 6px;
@@ -3908,7 +3918,15 @@ td .rw-txid {
     grid-template-columns: 1fr 1fr;
   }
   .rw-details-body {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .rw-details-body .statline {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+  .rw-details-body .statline .v {
+    text-align: left;
   }
   .rw-export-row .seg {
     margin-left: 0;
@@ -5705,6 +5723,8 @@ td .rw-txid {
 
   .rw-earning-facts > div[data-earning-fact="network"] {
     order: 4;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
   }
 
   .rw-earning-facts dt {
@@ -5720,6 +5740,10 @@ td .rw-txid {
 
   .rw-earning-facts > div[data-earning-fact="distribution"] dd {
     font-size: 20px;
+  }
+
+  .rw-earning-facts > div[data-earning-fact="network"] dd {
+    text-align: left;
   }
 
   .rw-earning-mobile-value small {
