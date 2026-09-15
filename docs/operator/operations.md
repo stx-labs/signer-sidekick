@@ -240,10 +240,15 @@ After building:
 
 ```sh
 node scripts/benchmark-runtime-reads.mjs 20000
+node scripts/benchmark-runtime-reads.mjs 220000
 ```
 
 The script creates/removes its own synthetic SQLite fixture and reports 30 warmed p50/p95/max
-reads and SQL prepares for Activity, maintenance, observer and health status. It includes settings
-history, empty polls and a 100-child run. No live source, production database or financial action is
-used. Compare the same fixture, runtime and hardware.
+reads, event-loop delay and SQL prepares for Activity, maintenance, observer and health status.
+It includes empty polls, callbacks interleaved with status reads, and a 100-child run. Callback
+lifecycle timings include ingestion and completion, not just cached GETs. No live source,
+production database or financial action is used. Compare the same fixture, runtime and hardware.
 This is not HTTP/browser latency, callback lag or daily API usage; validate those per instance.
+
+Observer lifetime totals rebuild on first use or an external database commit, then follow committed
+inbox changes. Queue/gap reads remain fresh and do not require that rebuild. No history is deleted.

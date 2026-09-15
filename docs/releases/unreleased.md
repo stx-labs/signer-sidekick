@@ -13,6 +13,9 @@
 
 ## Operator changes
 
+- Observer metrics/status no longer rescan lifetime delivery history after every callback.
+  Committed inbox changes update disposable counters; queue/gap checks use indexed live reads.
+  History, admission limits and verification rules are unchanged; no migration or configuration change.
 - Event-inbox overflow no longer stalls the node: Sidekick acknowledges and discards excess
   notifications, then catches up through normal verified reconciliation. Overflow warnings and catch-up
   requests are limited to once per minute; retained callbacks and financial records are unchanged.

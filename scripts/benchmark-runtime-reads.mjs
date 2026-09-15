@@ -15,8 +15,8 @@ import {
 } from "../apps/sidekick/dist/transaction-engine/reward-run-service.js";
 
 const count = Number(process.argv[2] ?? 20_000);
-if (!Number.isSafeInteger(count) || count < 100 || count > 100_000) {
-  throw new Error("row-count must be an integer from 100 to 100000");
+if (!Number.isSafeInteger(count) || count < 100 || count > 500_000) {
+  throw new Error("row-count must be an integer from 100 to 500000");
 }
 const directory = await mkdtemp(join(tmpdir(), "sidekick-read-bench-"));
 const databasePath = join(directory, "fixture.sqlite");
@@ -215,6 +215,7 @@ try {
     "activity-settings-page": () => activity.page({ ...query, type: "configuration" }),
     "maintenance-terminal-history": () => maintenance.recover(),
     "observer-status": () => store.observerInbox.status(),
+    "observer-operational": () => store.observerInbox.operationalStatus(),
     "observer-status-after-empty-claim": () => {
       store.observerInbox.claimNextDelivery(now.toISOString());
       return store.observerInbox.status();
@@ -246,6 +247,35 @@ try {
     },
     "health-current": () => health.current(),
   };
+  let deliverySequence = count;
+  // Include writes, not just the following GET: a faster read must not hide expensive ingestion.
+  cases["observer-active-delivery-lifecycle"] = () => {
+    const height = ++deliverySequence;
+    const accepted = store.observerInbox.acceptDelivery({
+      endpointKind: "new-block",
+      contentSha256: height.toString(16).padStart(64, "0"),
+      rawPayloadJson: "{}",
+      payloadBytes: 2,
+      state: "observer-claimed",
+      stateReason: null,
+      claimedBlockHeight: height,
+      claimedBlockHash: hash,
+      claimedIndexBlockHash: `0x${height.toString(16).padStart(64, "0")}`,
+      claimedBurnBlockHeight: null,
+      claimedBurnBlockHash: null,
+      receivedAt: now.toISOString(),
+    });
+    store.observerInbox.status();
+    store.observerInbox.claimNextDelivery(now.toISOString());
+    store.observerInbox.status();
+    store.observerInbox.finishDelivery({
+      deliveryId: accepted.deliveryId,
+      state: "node-verified",
+      reason: "benchmark",
+      completedAt: now.toISOString(),
+    });
+    return store.observerInbox.status();
+  };
   DatabaseSync.prototype.prepare = function (...args) {
     statements += 1;
     return originalPrepare.apply(this, args);
@@ -254,18 +284,28 @@ try {
   async function measure(name, read) {
     await read(); // hydrate/JIT outside warm measurements
     const samples = [];
+    const eventLoopDelays = [];
     const startStatements = statements;
     for (let index = 0; index < 30; index += 1) {
       await new Promise(setImmediate);
       const started = performance.now();
+      const yielded = new Promise((resolve) =>
+        setImmediate(() => {
+          eventLoopDelays.push(performance.now() - started);
+          resolve();
+        }),
+      );
       await read();
       samples.push(performance.now() - started);
+      await yielded;
     }
     samples.sort((a, b) => a - b);
+    eventLoopDelays.sort((a, b) => a - b);
     results[name] = {
       p50Ms: samples[14],
       p95Ms: samples[28],
       maxMs: samples[29],
+      eventLoopDelayP95Ms: eventLoopDelays[28],
       preparedStatementsPerRead: (statements - startStatements) / 30,
     };
   }

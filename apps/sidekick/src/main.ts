@@ -478,7 +478,7 @@ export async function executeCliCommand({
           getInfo: async (options) =>
             health.recentNodeInfo() ?? (await runtimeSettings.clients().node.getInfo(options)),
         }),
-        getInbox: () => store.observerInbox.status(),
+        getInbox: () => store.observerInbox.operationalStatus(),
         onGap: (status) =>
           observerReconciliation?.request("current", {
             stacksHeight: status.nodeStacksHeight,

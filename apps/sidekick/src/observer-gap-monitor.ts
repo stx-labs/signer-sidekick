@@ -1,4 +1,4 @@
-import type { ObserverInboxStatus } from "./storage/observer-inbox-repository.js";
+import type { ObserverInboxOperationalStatus } from "./storage/observer-inbox-repository.js";
 
 export const DEFAULT_OBSERVER_GAP_CHECK_INTERVAL_MS = 15_000;
 
@@ -42,7 +42,7 @@ function safeError(error: unknown): string {
 
 export class ObserverGapMonitor {
   readonly #getNode: () => GapNode;
-  readonly #getInbox: () => ObserverInboxStatus;
+  readonly #getInbox: () => ObserverInboxOperationalStatus;
   readonly #onGap: (status: ObserverGapStatus) => void;
   readonly #logger: ObserverGapLogger;
   readonly #now: () => Date;
@@ -60,7 +60,7 @@ export class ObserverGapMonitor {
 
   constructor(options: {
     getNode: () => GapNode;
-    getInbox: () => ObserverInboxStatus;
+    getInbox: () => ObserverInboxOperationalStatus;
     onGap?: (status: ObserverGapStatus) => void;
     logger: ObserverGapLogger;
     now?: () => Date;
