@@ -48,7 +48,8 @@ curl --fail http://127.0.0.1:3998/health/operational
    submitted work and background freshness. Do not mistake container health for indexing completion.
 
 Migration 40 records run/sweep execution sources and preserves legacy halted-run diagnostics.
-Schema 41 adds ten Activity/observer indexes; schema 42 indexes settings revisions. Neither rewrites
+Schema 41 adds ten Activity/observer indexes; schema 42 indexes settings revisions. Schema 43 adds
+snapshot retention metadata and history-read indexes. These migrations do not delete or rewrite
 financial rows. File-backed upgrades take an automatic pre-migration backup. Older binaries refuse
 newer schemas; rollback needs the
 compatible database, not just the old image. Never restore over newer submissions without reconciling
@@ -131,6 +132,21 @@ Saved wallet intents remain accessible by ID even when new preparation is unavai
 - **Distribute:** oldest pending distribution first, with its next action and paged payments.
 - **Past cycles:** distributions, payments, rolled-forward reasons and per-cycle/distribution CSV.
 - **Accounting:** indexed earned fees and whole-history export; unknown fees are not zero.
+
+Use **Older cycles** / **Newer cycles** for retained reward history. Accounting exports walk all
+cycle pages; selected-cycle exports stay scoped. Unavailable evidence or a safety limit produces a
+`-partial` download and `x-sidekick-history-complete: false`. The fee-refund event list retains its
+1,000-row display limit and marks truncation separately; older events remain in Activity/SQLite.
+Downloads spool to private temporary storage before sending headers, so completeness covers every
+page. Large exports need `/tmp` space; an exhausted filesystem fails the download, never silently
+truncates it. A disconnect or process exit releases the anonymous file.
+Exports describe the evidence read during pagination, not an atomic database snapshot.
+
+Pool/position detail is kept for 21 days, then compacted in small background batches. Position
+changes, first/latest state, cycle/weekly-distribution boundary samples, and unclassifiable legacy
+rows remain. Payments and signing/reconciliation evidence are never pruned by this policy. Old
+detail catches up gradually after an upgrade; database files need not shrink as free pages are
+reused. Do not run an automatic `VACUUM` or remove migration backups as part of routine cleanup.
 
 Partial/estimated allocations are labeled. Contract-rounding reserve is not operator fee income.
 Missing interpretation or evidence means details unavailable, not that the pool earned nothing.

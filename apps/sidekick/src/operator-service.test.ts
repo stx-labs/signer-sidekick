@@ -104,7 +104,7 @@ describe("reward ledger shared reads", () => {
 
   it("does not retain a rejected build or let one caller abort another's shared source read", async () => {
     const { service, builds, store } = await fixture();
-    vi.spyOn(store.walletIntents, "listOwnedTransactionIds").mockImplementationOnce(() => {
+    vi.spyOn(store, "ownedTransactionIds").mockImplementationOnce(() => {
       throw new Error("storage failed");
     });
     const failed = await Promise.allSettled([service.rewardLedger(), service.rewardLedger()]);
@@ -381,6 +381,60 @@ describe("operator service", () => {
     const second = await service.withdrawalRequestEvidence(registry, requests, undefined);
     expect(second).toEqual(first);
     expect(callReadOnly).toHaveBeenCalledTimes(2);
+  });
+
+  it("coalesces unresolved withdrawal reads across selections, isolates anchors and retries after the short display cache", async () => {
+    const { store } = await openSidekickStore(":memory:");
+    stores.push(store);
+    let now = 0;
+    let release!: () => void;
+    let signal: AbortSignal | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const callReadOnly = vi.fn().mockImplementation(async () => {
+      signal = currentInteractiveRequestSignal();
+      await gate;
+      throw new Error("node offline");
+    });
+    const service = new OperatorService({
+      config: {
+        network: "mainnet",
+        nodeRpcUrl: "http://unused.invalid",
+        apiUrl: "http://unused.invalid",
+      } as SidekickConfig,
+      managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
+      store,
+      node: { callReadOnly } as unknown as StacksNodeClient,
+      api: {} as StacksApiClient,
+      now: () => now,
+    });
+    const registry = "SM3VDXK3WZZSA84XXFKAFAF15NNZX32CTSG82JFQ4.sbtc-registry";
+    const requests = [{ requestId: "2684", initiatedBlockHeight: 8_800_000 }];
+    const caller = new AbortController();
+    const first = withOperatorRequestSignal(caller.signal, () =>
+      service.withdrawalRequestEvidence(registry, requests, "anchor-a"),
+    );
+    const second = service.withdrawalRequestEvidence(registry, requests, "anchor-a");
+    await new Promise(setImmediate);
+    caller.abort();
+    expect(signal?.aborted).toBe(false);
+    expect(callReadOnly).toHaveBeenCalledTimes(1);
+    release();
+    const [a, b] = await Promise.all([first, second]);
+    expect(a).toEqual(b);
+    expect(a.get("2684")?.status).toBe("unknown");
+    await service.withdrawalRequestEvidence(registry, requests, "anchor-a");
+    expect(callReadOnly).toHaveBeenCalledTimes(1);
+    await service.withdrawalRequestEvidence(registry, requests, "anchor-b");
+    expect(callReadOnly).toHaveBeenCalledTimes(2);
+    now = 30_000;
+    await service.withdrawalRequestEvidence(registry, requests, "anchor-a");
+    expect(callReadOnly).toHaveBeenCalledTimes(3);
+    await expect(service.withdrawalRequestStatus(registry, "2684", "anchor-a")).rejects.toThrow(
+      "node offline",
+    );
+    expect(callReadOnly).toHaveBeenCalledTimes(4); // action/preflight reads never use the display cache
   });
 
   it("contains transaction-engine failures at the optional observation boundary", async () => {

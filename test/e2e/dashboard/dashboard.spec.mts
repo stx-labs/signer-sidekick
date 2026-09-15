@@ -304,6 +304,40 @@ test("shows the prior cycle in history while its last distribution remains pendi
   await expect(history.getByRole("tab", { name: /Second Distribution/ })).toBeVisible();
 });
 
+test("pages older reward cycles without dropping the current distribution", async ({ page }) => {
+  const cursors: (string | null)[] = [];
+  await overrideFixtures(page, (request) => {
+    if (request.pathname !== "/api/v1/rewards/ledger" || request.searchParams.has("cycle"))
+      return undefined;
+    const ledger = structuredClone(responseFor(request.href)) as RewardLedger;
+    const before = request.searchParams.get("beforeCycle");
+    cursors.push(before);
+    const historical = structuredClone(ledger.cycles.at(-1));
+    if (!historical) throw new Error("Expected a historical cycle fixture");
+    const cycle = before === null ? 100 : 99;
+    historical.cycle = cycle;
+    for (const distribution of historical.distributions) distribution.cycle = cycle;
+    ledger.cycles = [...ledger.cycles.filter((item) => item.cycle >= 139), historical];
+    ledger.pagination = { nextBeforeCycle: before === null ? 100 : null };
+    ledger.fees.indexedPaymentCount = 100_001;
+    return ledger;
+  });
+  await login(page);
+  await openPage(page, "rewards", "Rewards");
+  const history = page.getByRole("region", { name: "Past cycles" });
+  await expect(page.getByText("Export all history", { exact: true })).toBeVisible();
+  await expect(history.getByRole("row", { name: "Cycle 100", exact: true })).toBeVisible();
+  const navigation = page.getByRole("navigation", { name: "Reward history pagination" });
+  await navigation.getByRole("button", { name: "Older cycles" }).click();
+  await expect(history.getByRole("row", { name: "Cycle 99", exact: true })).toBeVisible();
+  await expect(history.getByRole("row", { name: "Cycle 100", exact: true })).toHaveCount(0);
+  await expect(page.locator(".rw-now").getByText("Cycle 140 · First Distribution")).toBeVisible();
+  await expect(navigation.getByRole("button", { name: "Older cycles" })).toBeDisabled();
+  await navigation.getByRole("button", { name: "Newer cycles" }).click();
+  await expect(history.getByRole("row", { name: "Cycle 100", exact: true })).toBeVisible();
+  expect(cursors).toContain("100");
+});
+
 test("shows collected rounding separately from complete fees and keeps covered history closed", async ({
   page,
 }) => {

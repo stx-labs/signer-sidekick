@@ -2873,6 +2873,47 @@ describe("reward ledger routes", () => {
     query: { cycle: 141, distribution: 2, staker: "SP1", scope: "selection" },
   };
 
+  it("sets partial download headers from every page, and validates the history cursor", async () => {
+    const token = "test-operator-token-with-32-chars";
+    const service = {
+      snapshot: vi.fn().mockResolvedValue({ generatedAt: ledger.generatedAt }),
+      synchronize: vi.fn().mockResolvedValue({}),
+      rewardLedger: vi
+        .fn()
+        .mockResolvedValueOnce({ ...ledger, pagination: { nextBeforeCycle: 141 } })
+        .mockResolvedValueOnce({
+          ...ledger,
+          fees: { ...ledger.fees, historyComplete: false },
+          pagination: { nextBeforeCycle: null },
+        }),
+    };
+    const server = createServer({ service, authToken: token, logger: false });
+    servers.push(server);
+    const headers = { authorization: `Bearer ${token}` };
+    const exported = await server.inject({
+      method: "GET",
+      url: "/api/v1/rewards/ledger/payments.json?scope=all",
+      headers,
+    });
+    expect(exported.statusCode).toBe(200);
+    expect(exported.headers["x-sidekick-history-complete"]).toBe("false");
+    expect(exported.headers["content-disposition"]).toContain("-partial.json");
+    expect(service.rewardLedger).toHaveBeenCalledTimes(2);
+    expect(service.rewardLedger.mock.calls[1]?.[0]).toMatchObject({
+      beforeCycle: 141,
+      scope: "all",
+    });
+    expect(
+      (
+        await server.inject({
+          method: "GET",
+          url: "/api/v1/rewards/ledger?beforeCycle=-1",
+          headers,
+        })
+      ).statusCode,
+    ).toBe(400);
+  });
+
   it("forwards the parsed query and serves sanitized CSV and JSON exports", async () => {
     const token = "test-operator-token-with-32-chars";
     const service = {

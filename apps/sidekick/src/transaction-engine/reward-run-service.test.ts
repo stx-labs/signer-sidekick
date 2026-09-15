@@ -1191,6 +1191,19 @@ describe("reward run coordinator", () => {
     // Recreate the previous schema and its parent-only unresolved diagnostic.
     const legacy = new DatabaseSync(path);
     legacy.exec(`
+      DROP INDEX position_detail_due;
+      DROP INDEX pool_detail_due;
+      DROP INDEX position_detail_neighbors;
+      DROP INDEX pool_detail_neighbors;
+      DROP INDEX activity_chain_time;
+      DROP INDEX manager_claim_cycle;
+      DROP INDEX pox_reward_cycle;
+      ALTER TABLE staker_position_observations DROP COLUMN chain_anchor_json;
+      ALTER TABLE staker_position_observations DROP COLUMN reconciliation_complete;
+      ALTER TABLE staker_position_observations DROP COLUMN position_detail_json;
+      ALTER TABLE staker_position_observations DROP COLUMN history_compacted;
+      ALTER TABLE pool_cycle_snapshots DROP COLUMN history_compacted;
+      ALTER TABLE reward_cycle_snapshots DROP COLUMN snapshot_fingerprint;
       DROP INDEX settings_audit_revision;
       DROP INDEX IF EXISTS activity_chain_transactions;
     DROP INDEX IF EXISTS activity_run_transactions;

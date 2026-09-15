@@ -13,6 +13,13 @@
 
 ## Operator changes
 
+- Pool/position snapshots keep 21 days of detail, then retain meaningful changes and actual
+  cycle/weekly-distribution boundary samples. Unclassifiable legacy rows stay; financial evidence
+  and observer receipt identities are not pruned. Identical anchored snapshots avoid repeat writes.
+- Rewards can page older cycles and export payments across retained cycles without a global
+  newest-payment window. Historical fees reuse unchanged evidence; different views share pending
+  Bitcoin withdrawal reads. Activity seeks by its cursor and submitted-wallet scans load only due
+  manifests. No new dependencies, service or transaction authority.
 - Observer metrics/status no longer rescan lifetime delivery history after every callback.
   Committed inbox changes update disposable counters; queue/gap checks use indexed live reads.
   History, admission limits and verification rules are unchanged; no migration or configuration change.
@@ -82,8 +89,9 @@ notifications are recovered by polling once the node and indexed API are availab
 
 Back up the database, gas-wallet key and deployment configuration as one protected restore set.
 Migration **40** adds nullable run/sweep execution provenance and preserves legacy halted-run
-diagnostics; **41** adds ten read indexes and **42** indexes settings revisions without rewriting
-financial rows. On-disk upgrades take an automatic pre-migration backup. Older binaries refuse
+diagnostics; **41** adds ten read indexes, **42** indexes settings revisions, and **43** adds
+snapshot retention metadata and history-read indexes without rewriting financial rows. On-disk
+upgrades take an automatic pre-migration backup. Older binaries refuse
 newer schemas: rollback needs a compatible
 database, and restoring must not discard a newer submission. Follow [Operations](../operator/operations.md#upgrade).
 
@@ -99,6 +107,10 @@ accepted-withdrawal cache's known-reorg display limitation remains. See
 
 ## API and export compatibility
 
+- Ledger accepts `beforeCycle` and returns optional `pagination.nextBeforeCycle`. Follow the cursor
+  for older cycles; `scope=all` ledger reads are paged. CSV/JSON downloads traverse the cycle pages
+  before declaring completeness. Per-period safety limits still produce partial downloads, and
+  optional `fees.refundsTruncated` identifies the existing bounded refund-event list.
 - **Breaking rename:** `sourceReview.exactReviewed` → `sourceReview.reviewed` in REST/support
   output. Inspect `sourceReview.match` when exact-byte provenance matters.
 - Ledger status adds `interpretation-unavailable`. Paid-fee/cycle/indexed earned totals can be

@@ -1,5 +1,5 @@
 import type { RewardRun } from "@stx-labs/signer-sidekick-api-contracts";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildRewardLedger,
   csvSafeCell,
@@ -10,6 +10,7 @@ import {
   rewardLedgerFeesCsv,
   rewardLedgerPaymentsCsv,
 } from "./reward-ledger.js";
+import { prepareRewardLedgerExport } from "./reward-ledger-export.js";
 import type {
   StoredCycleMembership,
   StoredManagerClaim,
@@ -172,7 +173,10 @@ function fakeStore(data: {
   memberships?: Record<number, StoredCycleMembership[]>;
 }): RewardLedgerStore {
   return {
-    listRewardCalculationRealizations: () => data.realizations ?? [],
+    listRewardCalculationRealizations: (_manager, _pox, options) =>
+      [...(data.realizations ?? [])]
+        .sort((a, b) => b.blockHeight - a.blockHeight)
+        .slice(0, options?.limit ?? 500),
     // Mirrors the store contract: newest `limit` rows, returned oldest first.
     listPox5RewardPrints: (_chainId, _pox5, _manager, options) => {
       const rows = [...(data.prints ?? [])].sort((a, b) => a.blockHeight - b.blockHeight);
@@ -218,7 +222,155 @@ function snapshot(overrides: Partial<RewardLedgerSnapshotInput> = {}): RewardLed
   };
 }
 
+describe("paged accounting downloads", () => {
+  async function page(cycle: number, nextBeforeCycle: number | null) {
+    const ledger = await buildRewardLedger({
+      store: fakeStore({
+        claims: [claim(cycle, alice, cycle, 4000, "95")],
+        prints: [grossPrint(cycle, alice, 4000, "100")],
+      }),
+      chainId: 1,
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      sourceId: null,
+      ownedTxids: new Set(),
+      now,
+      snapshot: snapshot(),
+      query: { scope: "all" },
+    });
+    return { ...ledger, pagination: { nextBeforeCycle } };
+  }
+  async function body(stream: AsyncIterable<unknown>) {
+    let text = "";
+    for await (const chunk of stream) text += String(chunk);
+    return text;
+  }
+  it.each([
+    "csv",
+    "json",
+  ] as const)("walks every payment/fee page once with one %s header/summary", async (format) => {
+    for (const name of ["payments", "fees"] as const) {
+      const load = vi
+        .fn()
+        .mockResolvedValueOnce(await page(141, 141))
+        .mockResolvedValueOnce(await page(140, null));
+      const output = await prepareRewardLedgerExport({
+        load,
+        query: { scope: "all" },
+        name,
+        format,
+      });
+      const text = await body(output.stream);
+      expect(output.complete).toBe(true);
+      expect(load).toHaveBeenNthCalledWith(2, { scope: "all", beforeCycle: 141 });
+      expect(load).toHaveBeenCalledTimes(2);
+      if (format === "json") {
+        const parsed = JSON.parse(text);
+        const rows =
+          name === "fees"
+            ? parsed.rows.filter((row: { kind: string }) => row.kind === "operator-fee")
+            : parsed;
+        expect(rows.map((row: { cycle: number }) => row.cycle)).toEqual([141, 140]);
+      } else {
+        expect(
+          text.split("\n").filter((line) => line.startsWith(name === "fees" ? "kind," : "cycle,")),
+        ).toHaveLength(1);
+        expect(text).toContain(tx(141));
+        expect(text).toContain(tx(140));
+      }
+    }
+  });
+  it("marks the whole export partial when a later page lacks evidence, before returning the stream", async () => {
+    const later = await page(140, null);
+    later.evidenceWindow.truncated = true;
+    const load = vi
+      .fn()
+      .mockResolvedValueOnce(await page(141, 141))
+      .mockResolvedValueOnce(later);
+    const output = await prepareRewardLedgerExport({
+      load,
+      query: { scope: "all" },
+      name: "payments",
+      format: "json",
+    });
+    expect(output.complete).toBe(false);
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(await body(output.stream))).toHaveLength(2);
+  });
+  it("marks the bounded refund-event list partial without changing payment completeness", async () => {
+    const ledger = await page(141, null);
+    ledger.fees.refundsTruncated = true;
+    for (const name of ["payments", "fees"] as const) {
+      const output = await prepareRewardLedgerExport({
+        load: async () => ledger,
+        query: { scope: "all" },
+        name,
+        format: "json",
+      });
+      expect(output.complete).toBe(name === "payments");
+      await body(output.stream);
+    }
+  });
+  it("keeps selected-cycle exports scoped, and refuses a stuck cursor, changed identity or cancelled download", async () => {
+    const first = await page(141, 141);
+    const load = vi.fn().mockResolvedValue(first);
+    const selected = await prepareRewardLedgerExport({
+      load,
+      query: { cycle: 141 },
+      name: "payments",
+      format: "json",
+    });
+    expect(JSON.parse(await body(selected.stream))).toHaveLength(1);
+    expect(load).toHaveBeenCalledTimes(1);
+    await expect(
+      prepareRewardLedgerExport({
+        load,
+        query: { scope: "all" },
+        name: "payments",
+        format: "json",
+      }),
+    ).rejects.toThrow("cursor did not advance");
+    load
+      .mockReset()
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce({ ...(await page(140, null)), managerPrincipal: `${manager}-other` });
+    await expect(
+      prepareRewardLedgerExport({ load, query: { scope: "all" }, name: "payments", format: "csv" }),
+    ).rejects.toThrow("identity changed");
+    load.mockClear();
+    await expect(
+      prepareRewardLedgerExport({
+        load,
+        query: { scope: "all" },
+        name: "fees",
+        format: "csv",
+        aborted: () => true,
+      }),
+    ).rejects.toThrow("cancelled");
+    expect(load).not.toHaveBeenCalled();
+  });
+});
+
 describe("buildRewardLedger", () => {
+  it("marks a within-period calculation safety cap as partial instead of silently omitting evidence", async () => {
+    const ledger = await buildRewardLedger({
+      store: fakeStore({
+        realizations: Array.from({ length: 501 }, (_, index) =>
+          realization(141, "first-half", index + 1, "100", tx(index + 1)),
+        ),
+      }),
+      chainId: 1,
+      managerPrincipal: manager,
+      pox5ContractId: pox5,
+      sourceId: null,
+      ownedTxids: new Set(),
+      now,
+      snapshot: snapshot(),
+      query: { cycle: 141 },
+    });
+    expect(ledger.evidenceWindow).toMatchObject({ truncated: true, oldestRetainedBlockHeight: 2 });
+    expect(ledger.fees.historyComplete).toBe(false);
+  });
   it.each([
     "unsupported manager",
     "missing live reads",

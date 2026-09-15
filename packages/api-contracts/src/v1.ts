@@ -3100,6 +3100,7 @@ export const rewardLedgerSchema = z
         distribution: ledgerDistributionIndexSchema.nullable(),
       })
       .strict(),
+    pagination: z.object({ nextBeforeCycle: ledgerCycleSchema.nullable() }).strict().optional(),
     cycles: z.array(rewardLedgerCycleSchema).max(200),
     payments: z.array(rewardLedgerPaymentSchema).max(100_000),
     paymentsTruncated: z.boolean(),
@@ -3115,6 +3116,8 @@ export const rewardLedgerSchema = z
         historyComplete: z.boolean(),
         balanceInManagerSats: ledgerSatsSchema.nullable(),
         withdrawnDerivedSats: ledgerSatsSchema.nullable(),
+        /** Separate from earned-fee completeness: this diagnostic event list is bounded. */
+        refundsTruncated: z.boolean().optional(),
         refunds: z
           .array(
             z
@@ -3133,7 +3136,7 @@ export const rewardLedgerSchema = z
         cycle: ledgerCycleSchema.nullable(),
         distribution: ledgerDistributionIndexSchema.nullable(),
         staker: z.string().min(1).max(200).nullable(),
-        /** `all` lists every retained payment (accounting exports); `selection` is one cycle. */
+        /** `all` pages retained cycles for exports; `selection` selects one cycle's payments. */
         scope: z.enum(["selection", "all"]),
       })
       .strict(),

@@ -30,6 +30,7 @@ import { ObserverInboxRepository } from "./observer-inbox-repository.js";
 import { RewardRunRepository } from "./reward-run-repository.js";
 import { RuntimeSettingsRepository } from "./runtime-settings-repository.js";
 import { SbtcWithdrawalCompletionRepository } from "./sbtc-withdrawal-completion-repository.js";
+import { SnapshotHistoryRepository } from "./snapshot-history-repository.js";
 import { WalletIntentRepository } from "./wallet-intent-repository.js";
 
 const hashSchema = z.string().regex(/^0x[0-9a-f]{64}$/);
@@ -1681,6 +1682,11 @@ function toSignerStakerRun(row: unknown): SignerStakerRun {
 }
 
 export class SidekickStore {
+  private readonly rewardFeeTotals = new Map<
+    string,
+    { earnedIndexedSats: string; paymentCount: number; unmatchedPaymentCount: number }
+  >();
+  private feeDataVersion: number | null = null;
   readonly activity: ActivityReadRepository;
   readonly transactionEngine: TransactionEngineRepository;
   readonly walletIntents: WalletIntentRepository;
@@ -1694,6 +1700,7 @@ export class SidekickStore {
   readonly managerTrust: ManagerTrustRepository;
   readonly chainState: ChainStateRepository;
   readonly sbtcWithdrawalCompletions: SbtcWithdrawalCompletionRepository;
+  readonly snapshotHistory: SnapshotHistoryRepository;
 
   constructor(private readonly db: DatabaseSync) {
     this.activity = new ActivityReadRepository(db);
@@ -1709,6 +1716,7 @@ export class SidekickStore {
     this.managerTrust = new ManagerTrustRepository(db);
     this.chainState = new ChainStateRepository(db);
     this.sbtcWithdrawalCompletions = new SbtcWithdrawalCompletionRepository(db);
+    this.snapshotHistory = new SnapshotHistoryRepository(db);
   }
 
   close(): void {
@@ -1743,6 +1751,7 @@ export class SidekickStore {
   }
 
   putChainEvent(input: ChainEventInput): void {
+    this.rewardFeeTotals.clear();
     const value = eventInputSchema.parse(input);
     const rawPayloadJson = serializeJson(value.rawPayload, "rawPayload");
     const decodedPayloadJson =
@@ -2194,11 +2203,19 @@ export class SidekickStore {
     chainId: number,
     pox5ContractId: string,
     managerPrincipal: string,
-    options: { kinds?: readonly StoredPox5RewardPrint["kind"][]; limit?: number } = {},
+    options: {
+      kinds?: readonly StoredPox5RewardPrint["kind"][];
+      limit?: number;
+      cycles?: readonly number[];
+    } = {},
   ): StoredPox5RewardPrint[] {
     const parsedChainId = z.number().int().nonnegative().parse(chainId);
     const contract = principalSchema.parse(pox5ContractId);
     const manager = principalSchema.parse(managerPrincipal);
+    const cycles = options.cycles?.map((cycle) =>
+      String(z.number().int().nonnegative().safe().parse(cycle)),
+    );
+    if (cycles?.length === 0) return [];
     const kinds = [
       ...new Set(options.kinds ?? ["claim-rewards", "claim-staker-rewards-for-signer"]),
     ];
@@ -2208,19 +2225,35 @@ export class SidekickStore {
       .min(1)
       .max(100_001)
       .parse(options.limit ?? 10_001);
-    const rows = this.db
-      .prepare(
-        `SELECT tx_id, event_index, block_height, index_block_hash, decoded_payload_json,
-                first_seen_at
-         FROM chain_events
+    const select = `SELECT tx_id, event_index, block_height, index_block_hash, decoded_payload_json,
+                first_seen_at FROM chain_events ${cycles ? "" : "INDEXED BY chain_events_canonical_height"}
          WHERE chain_id = ? AND contract_id = ? AND canonical = 1
            AND json_extract(decoded_payload_json, '$.transactionStatus') = 'success'
            AND json_extract(decoded_payload_json, '$.event.signerManager') = ?
-           AND json_extract(decoded_payload_json, '$.event.kind') IN (${kinds.map(() => "?").join(", ")})
+           AND json_extract(decoded_payload_json, '$.event.kind') IN (${kinds.map(() => "?").join(", ")})`;
+    const bindings = [parsedChainId, contract, manager, ...kinds];
+    // Older normalized prints may lack a cycle. Keep the prints bound to selected manager
+    // payments by txid, rather than turning a known historical gross/fee into missing evidence.
+    const period = cycles
+      ? `${select} AND json_extract(decoded_payload_json, '$.event.rewardCycle') IN (${cycles.map(() => "?").join(",")})
+         UNION ALL ${select}
+           AND json_extract(decoded_payload_json, '$.event.rewardCycle') IS NULL
+           AND tx_id IN (SELECT tx_id FROM manager_activity_events
+             WHERE chain_id = ? AND manager_principal = ? AND canonical = 1
+               AND kind = 'claim-staker-rewards'
+               AND reward_cycle IN (${cycles.map(() => "?").join(",")}))`
+      : select;
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM (${period})
          ORDER BY block_height DESC, tx_id DESC, event_index DESC
          LIMIT ?`,
       )
-      .all(parsedChainId, contract, manager, ...kinds, limit) as Array<{
+      .all(
+        ...bindings,
+        ...(cycles ? [...cycles, ...bindings, parsedChainId, manager, ...cycles] : []),
+        limit,
+      ) as Array<{
       tx_id: string;
       event_index: number;
       block_height: number;
@@ -2261,23 +2294,29 @@ export class SidekickStore {
     chainId: number,
     managerPrincipal: string,
     limit = 10_001,
+    options: { cycles?: readonly number[] } = {},
   ): StoredManagerClaim[] {
     const parsedChainId = z.number().int().nonnegative().parse(chainId);
     const manager = principalSchema.parse(managerPrincipal);
     const parsedLimit = z.number().int().min(1).max(100_001).parse(limit);
+    const cycles = options.cycles?.map((cycle) =>
+      String(z.number().int().nonnegative().safe().parse(cycle)),
+    );
+    if (cycles?.length === 0) return [];
     const rows = this.db
       .prepare(
         `SELECT m.tx_id, m.event_index, m.block_height, m.staker_principal, m.reward_cycle,
                 m.bond_index, m.amount_sats, m.request_id, c.occurred_at
-         FROM manager_activity_events AS m
+         FROM manager_activity_events AS m ${cycles ? "" : "INDEXED BY manager_activity_stable_order"}
          LEFT JOIN chain_events AS c
            ON c.chain_id = m.chain_id AND c.tx_id = m.tx_id AND c.event_index = m.event_index
          WHERE m.chain_id = ? AND m.manager_principal = ? AND m.canonical = 1
            AND m.kind = 'claim-staker-rewards'
+           ${cycles ? `AND m.reward_cycle IN (${cycles.map(() => "?").join(",")})` : ""}
          ORDER BY m.block_height DESC, m.tx_id DESC, m.event_index DESC
          LIMIT ?`,
       )
-      .all(parsedChainId, manager, parsedLimit) as Array<{
+      .all(parsedChainId, manager, ...(cycles ?? []), parsedLimit) as Array<{
       tx_id: string;
       event_index: number;
       block_height: number;
@@ -2316,6 +2355,12 @@ export class SidekickStore {
     const parsedChainId = z.number().int().nonnegative().parse(chainId);
     const manager = principalSchema.parse(managerPrincipal);
     const pox5 = principalSchema.parse(pox5ContractId);
+    const dataVersion = Number(this.db.prepare("PRAGMA data_version").get()?.data_version);
+    if (this.feeDataVersion !== dataVersion) this.rewardFeeTotals.clear();
+    this.feeDataVersion = dataVersion;
+    const key = JSON.stringify([parsedChainId, manager, pox5]);
+    const cached = this.rewardFeeTotals.get(key);
+    if (cached) return { ...cached };
     const row = this.db
       .prepare(
         `WITH claims AS (
@@ -2354,11 +2399,84 @@ export class SidekickStore {
       unmatched_count: number;
       earned_sats: number;
     };
-    return {
+    const result = {
       earnedIndexedSats: BigInt(row.earned_sats).toString(),
       paymentCount: z.number().int().nonnegative().parse(row.payment_count),
       unmatchedPaymentCount: z.number().int().nonnegative().parse(row.unmatched_count),
     };
+    if (this.rewardFeeTotals.size >= 16) this.rewardFeeTotals.clear();
+    this.rewardFeeTotals.set(key, result);
+    return { ...result };
+  }
+
+  ownedTransactionIds(ids: readonly string[]): Set<string> {
+    const unique = [...new Set(ids.map((id) => hashSchema.parse(id)))];
+    const owned = new Set<string>();
+    for (let offset = 0; offset < unique.length; offset += 250) {
+      const batch = unique.slice(offset, offset + 250);
+      const parameters = batch.map(() => "?").join(",");
+      const rows = this.db
+        .prepare(`SELECT txid FROM browser_wallet_intents WHERE txid IN (${parameters})
+        UNION SELECT txid FROM transaction_run_children WHERE txid IN (${parameters})
+        UNION SELECT precomputed_txid AS txid FROM transaction_attempts WHERE precomputed_txid IN (${parameters})`)
+        .all(...batch, ...batch, ...batch) as { txid: string }[];
+      for (const row of rows) owned.add(row.txid);
+    }
+    return owned;
+  }
+
+  /** Cycle identities, not a lifetime payment projection. Explicit older cycles remain addressable. */
+  listRewardLedgerCycles(
+    chainId: number,
+    managerPrincipal: string,
+    pox5ContractId: string | null,
+    options: { beforeCycle?: number | null; limit?: number; liveCycles?: readonly number[] } = {},
+  ): { cycles: number[]; nextBeforeCycle: number | null } {
+    const chain = z.number().int().nonnegative().parse(chainId);
+    const manager = principalSchema.parse(managerPrincipal);
+    const pox = pox5ContractId === null ? null : principalSchema.parse(pox5ContractId);
+    const limit = z
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .parse(options.limit ?? 20);
+    const before =
+      options.beforeCycle == null
+        ? null
+        : z.number().int().nonnegative().safe().parse(options.beforeCycle);
+    const liveCycles = (options.liveCycles ?? []).map((cycle) =>
+      z.number().int().nonnegative().safe().parse(cycle),
+    );
+    const rows = this.db
+      .prepare(`SELECT cycle FROM (
+      SELECT CAST(reward_cycle AS INTEGER) AS cycle FROM manager_activity_events
+        WHERE chain_id = ? AND manager_principal = ? AND canonical = 1 AND kind = 'claim-staker-rewards'
+      UNION SELECT target_reward_cycle FROM reward_calculation_realizations
+        WHERE chain_id = ? AND manager_principal = ? AND pox5_contract_id = ? AND canonical = 1
+      UNION SELECT CAST(json_extract(decoded_payload_json, '$.event.rewardCycle') AS INTEGER) FROM chain_events
+        WHERE chain_id = ? AND contract_id = ? AND canonical = 1
+          AND json_extract(decoded_payload_json, '$.transactionStatus') = 'success'
+          AND json_extract(decoded_payload_json, '$.event.signerManager') = ?
+          AND json_extract(decoded_payload_json, '$.event.kind') = 'claim-rewards'
+      ${liveCycles.map(() => "UNION SELECT ?").join(" ")}
+      ) WHERE cycle IS NOT NULL AND (? IS NULL OR cycle < ?) ORDER BY cycle DESC LIMIT ?`)
+      .all(
+        chain,
+        manager,
+        chain,
+        manager,
+        pox,
+        chain,
+        pox,
+        manager,
+        ...liveCycles,
+        before,
+        before,
+        limit + 1,
+      ) as { cycle: number }[];
+    const cycles = rows.slice(0, limit).map(({ cycle }) => cycle);
+    return { cycles, nextBeforeCycle: rows.length > limit ? (cycles.at(-1) ?? null) : null };
   }
 
   /** Every Bitcoin withdrawal request the manager initiated, with its latest manager-side state. */
@@ -2366,6 +2484,7 @@ export class SidekickStore {
     chainId: number,
     managerPrincipal: string,
     limit = 10_001,
+    options: { cycles?: readonly number[] } = {},
   ): StoredManagerWithdrawal[] {
     const parsedLimit = z.number().int().min(1).max(100_001).parse(limit);
     const records: StoredManagerWithdrawal[] = [];
@@ -2375,6 +2494,7 @@ export class SidekickStore {
         offset,
         sort: "request",
         direction: "asc",
+        ...(options.cycles ? { cycles: options.cycles } : {}),
       });
       records.push(...page.items);
       if (page.items.length < 200) break;
@@ -2530,10 +2650,14 @@ export class SidekickStore {
       state?: "pending" | "settled" | "reclaimed" | null;
       sort?: "request" | "staker" | "amount" | "max-fee" | "state" | "block";
       direction?: "asc" | "desc";
+      cycles?: readonly number[];
     } = {},
   ): ManagerActivityPage<StoredManagerWithdrawal> {
     const parsedChainId = z.number().int().nonnegative().parse(chainId);
     const manager = principalSchema.parse(managerPrincipal);
+    const cycles = options.cycles?.map((cycle) =>
+      String(z.number().int().nonnegative().safe().parse(cycle)),
+    );
     const limit = z
       .number()
       .int()
@@ -2606,13 +2730,14 @@ export class SidekickStore {
         AND initiation.manager_principal = ?
         AND initiation.canonical = 1
         AND initiation.kind = 'claim-staker-rewards'
+        ${cycles ? `AND initiation.reward_cycle IN (${cycles.map(() => "?").join(",")})` : ""}
         AND initiation.request_id IS NOT NULL
     )`;
     const totalRow = this.db
       .prepare(
         `${cte} SELECT count(*) AS count FROM withdrawal_state WHERE (? IS NULL OR state = ?)`,
       )
-      .get(parsedChainId, manager, state, state) as { count: number };
+      .get(parsedChainId, manager, ...(cycles ?? []), state, state) as { count: number };
     const rows = this.db
       .prepare(
         `${cte}
@@ -2624,7 +2749,7 @@ export class SidekickStore {
          ORDER BY ${withdrawalOrder} ${direction}, CAST(request_id AS INTEGER) ${direction}
          LIMIT ? OFFSET ?`,
       )
-      .all(parsedChainId, manager, state, state, limit, offset);
+      .all(parsedChainId, manager, ...(cycles ?? []), state, state, limit, offset);
     return {
       items: rows.map((row) => {
         const value = managerWithdrawalRowSchema.parse(row);
@@ -2671,6 +2796,7 @@ export class SidekickStore {
   }
 
   markIndexBlockNonCanonical(chainId: number, indexBlockHash: string, updatedAt: string): number {
+    this.rewardFeeTotals.clear();
     const parsedChainId = z.number().int().nonnegative().parse(chainId);
     const parsedIndexBlockHash = hashSchema.parse(indexBlockHash);
     const parsedUpdatedAt = z.iso.datetime().parse(updatedAt);
@@ -2714,6 +2840,7 @@ export class SidekickStore {
     presentEventIds: ReadonlySet<string>,
     updatedAt: string,
   ): number {
+    this.rewardFeeTotals.clear();
     const parsedChainId = z.number().int().nonnegative().parse(chainId);
     const parsedContractId = principalSchema.parse(contractId);
     const parsedBoundary = z.number().int().nonnegative().parse(boundaryBlockHeight);
@@ -3145,14 +3272,33 @@ export class SidekickStore {
         observed_index_block_hash = excluded.observed_index_block_hash,
         updated_at = excluded.updated_at`,
     );
+    const positionStateColumns = [
+      "has_stx",
+      "has_btc",
+      "stx_node_verified",
+      "position_present",
+      "signer_principal",
+      "amount_ustx",
+      "first_reward_cycle",
+      "num_cycles",
+      "unlock_cycle",
+      "unlock_burn_height",
+      "source_id",
+      "verification_source_id",
+      "observed_index_block_hash",
+      "chain_anchor_json",
+      "reconciliation_complete",
+      "position_detail_json",
+    ];
     const putPositionObservation = this.db.prepare(
       `INSERT INTO staker_position_observations (
         manager_principal, staker_principal, observed_burn_block_height,
         observed_stacks_tip_height, has_stx, has_btc, stx_node_verified,
         position_present, signer_principal, amount_ustx, first_reward_cycle,
         num_cycles, unlock_cycle, unlock_burn_height, source_id,
-        verification_source_id, observed_index_block_hash, observed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        verification_source_id, observed_index_block_hash, observed_at, chain_anchor_json,
+        reconciliation_complete, position_detail_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (
         manager_principal, staker_principal,
         observed_burn_block_height, observed_stacks_tip_height
@@ -3170,7 +3316,12 @@ export class SidekickStore {
         source_id = excluded.source_id,
         verification_source_id = excluded.verification_source_id,
         observed_index_block_hash = excluded.observed_index_block_hash,
-        observed_at = excluded.observed_at`,
+        observed_at = excluded.observed_at,
+        chain_anchor_json = excluded.chain_anchor_json,
+        reconciliation_complete = excluded.reconciliation_complete,
+        position_detail_json = excluded.position_detail_json,
+        history_compacted = 0
+      WHERE (${positionStateColumns.join(",")}) IS NOT (${positionStateColumns.map((column) => `excluded.${column}`).join(",")})`,
     );
 
     this.db.exec("BEGIN IMMEDIATE");
@@ -3235,6 +3386,27 @@ export class SidekickStore {
           item.hasStx ? value.nodeSourceId : null,
           value.chainAnchor?.indexBlockHash ?? null,
           value.observedAt,
+          value.chainAnchor ? JSON.stringify(value.chainAnchor) : null,
+          item.reconciliationComplete ? 1 : 0,
+          JSON.stringify({
+            active: item.active,
+            bond:
+              item.bond === null
+                ? null
+                : {
+                    bondIndex: item.bond.bondIndex.toString(),
+                    amountUstx: item.bond.amountUstx.toString(),
+                    amountSats: item.bond.amountSats.toString(),
+                    isL1Lock: item.bond.isL1Lock,
+                  },
+            cycleMemberships: (observedPosition?.cycleMemberships ?? [])
+              .map((membership) => ({
+                rewardCycle: membership.rewardCycle.toString(),
+                signerPrincipal: membership.signerPrincipal,
+                amountUstx: membership.amountUstx.toString(),
+              }))
+              .sort((left, right) => left.rewardCycle.localeCompare(right.rewardCycle)),
+          }),
         );
 
         if (!item.reconciliationComplete || !observedPosition) continue;
@@ -3519,6 +3691,24 @@ export class SidekickStore {
 
   putPoolCycleSnapshots(input: PoolCycleSnapshotInput): void {
     const value = poolCycleSnapshotInputSchema.parse(input);
+    const stateColumns = [
+      "status",
+      "roster_available",
+      "staker_count",
+      "enumerated_stx_ustx",
+      "enumeration_delta_ustx",
+      "pending_stx_ustx",
+      "eligible_stx_shares_ustx",
+      "total_delegated_ustx",
+      "non_stx_delegated_ustx",
+      "in_signer_set",
+      "threshold_ustx",
+      "threshold_margin_ustx",
+      "value_classification",
+      "contract_source",
+      "local_roster_source",
+      "chain_anchor_json",
+    ];
     const upsert = this.db.prepare(
       `INSERT INTO pool_cycle_snapshots (
         manager_principal, reward_cycle, observed_burn_block_height,
@@ -3548,7 +3738,9 @@ export class SidekickStore {
         contract_source = excluded.contract_source,
         local_roster_source = excluded.local_roster_source,
         chain_anchor_json = excluded.chain_anchor_json,
-        observed_at = excluded.observed_at`,
+        observed_at = excluded.observed_at,
+        history_compacted = 0
+      WHERE (${stateColumns.join(",")}) IS NOT (${stateColumns.map((column) => `excluded.${column}`).join(",")})`,
     );
     this.db.exec("BEGIN IMMEDIATE");
     try {
@@ -3666,6 +3858,17 @@ export class SidekickStore {
 
   putRewardCycleSnapshot(input: RewardCycleSnapshotInput): void {
     const value = rewardCycleSnapshotInputSchema.parse(input);
+    const fingerprint = createHash("sha256")
+      .update(
+        JSON.stringify({
+          ...value,
+          observedAt: undefined,
+          stakers: [...value.stakers].sort((a, b) =>
+            a.stakerPrincipal.localeCompare(b.stakerPrincipal),
+          ),
+        }),
+      )
+      .digest("hex");
     const upsertCycle = this.db.prepare(
       `INSERT INTO reward_cycle_snapshots (
         manager_principal, reward_cycle, status, observed_burn_block_height,
@@ -3675,8 +3878,8 @@ export class SidekickStore {
         configured_fee_bips,
         earned_fees_sats, withdrawal_liability_sats, unclaimed_staker_rewards_sats,
         staker_count, gross_sats, earned_sats, fee_sats, actionable_claims,
-        l1_claims_waiting_for_fee_threshold, observed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        l1_claims_waiting_for_fee_threshold, observed_at, snapshot_fingerprint
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT (manager_principal, reward_cycle) DO UPDATE SET
         status = excluded.status,
         observed_burn_block_height = excluded.observed_burn_block_height,
@@ -3698,7 +3901,8 @@ export class SidekickStore {
         fee_sats = excluded.fee_sats,
         actionable_claims = excluded.actionable_claims,
         l1_claims_waiting_for_fee_threshold = excluded.l1_claims_waiting_for_fee_threshold,
-        observed_at = excluded.observed_at`,
+        observed_at = excluded.observed_at,
+        snapshot_fingerprint = excluded.snapshot_fingerprint`,
     );
     const insertStaker = this.db.prepare(
       `INSERT INTO staker_reward_cycle_snapshots (
@@ -3709,6 +3913,14 @@ export class SidekickStore {
     );
     this.db.exec("BEGIN IMMEDIATE");
     try {
+      const previous = this.db
+        .prepare(`SELECT snapshot_fingerprint FROM reward_cycle_snapshots
+        WHERE manager_principal = ? AND reward_cycle = ?`)
+        .get(value.managerPrincipal, value.rewardCycle);
+      if (previous?.snapshot_fingerprint === fingerprint) {
+        this.db.exec("COMMIT");
+        return;
+      }
       upsertCycle.run(
         value.managerPrincipal,
         value.rewardCycle,
@@ -3733,6 +3945,7 @@ export class SidekickStore {
         value.totals.actionableClaims,
         value.totals.l1ClaimsWaitingForFeeThreshold,
         value.observedAt,
+        fingerprint,
       );
       this.db
         .prepare(
@@ -3928,7 +4141,7 @@ export class SidekickStore {
   listRewardCalculationRealizations(
     managerPrincipal: string,
     pox5ContractId: string,
-    options: { limit?: number; canonicalOnly?: boolean } = {},
+    options: { limit?: number; canonicalOnly?: boolean; cycles?: readonly number[] } = {},
   ): StoredRewardCalculationRealization[] {
     const manager = principalSchema.parse(managerPrincipal);
     const contract = principalSchema.parse(pox5ContractId);
@@ -3936,18 +4149,23 @@ export class SidekickStore {
       .number()
       .int()
       .min(1)
-      .max(500)
+      .max(501)
       .parse(options.limit ?? 50);
     const canonicalOnly = options.canonicalOnly ?? true;
+    const cycles = options.cycles?.map((cycle) =>
+      z.number().int().nonnegative().safe().parse(cycle),
+    );
+    if (cycles?.length === 0) return [];
     const rows = this.db
       .prepare(
         `SELECT * FROM reward_calculation_realizations
          WHERE manager_principal = ? AND pox5_contract_id = ?
            AND (? = 0 OR canonical = 1)
+           ${cycles ? `AND target_reward_cycle IN (${cycles.map(() => "?").join(",")})` : ""}
          ORDER BY calculation_burn_height DESC, block_height DESC, event_index DESC
          LIMIT ?`,
       )
-      .all(manager, contract, canonicalOnly ? 1 : 0, limit);
+      .all(manager, contract, canonicalOnly ? 1 : 0, ...(cycles ?? []), limit);
     return rows.map(toStoredRewardCalculationRealization);
   }
 

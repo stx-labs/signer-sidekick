@@ -39,7 +39,6 @@ import {
   type RewardRun,
   type RewardRunPreparation,
   reconciliationSummarySchema,
-  rewardLedgerSchema,
   rewardRunApproveRequestSchema,
   rewardRunPrepareRequestSchema,
   signerGrantVerifyRequestSchema,
@@ -78,12 +77,7 @@ import {
   withInteractiveRequestDeadline,
   withOperatorRequestSignal,
 } from "./request-context.js";
-import {
-  rewardLedgerDistributionsCsv,
-  rewardLedgerFeeRows,
-  rewardLedgerFeesCsv,
-  rewardLedgerPaymentsCsv,
-} from "./reward-ledger.js";
+import { prepareRewardLedgerExport } from "./reward-ledger-export.js";
 import {
   RosterReconciliationMetricsTracker,
   RosterReconciliationRetryError,
@@ -142,9 +136,11 @@ interface OperatorSnapshotService {
   supportSnapshot?(force?: boolean): Promise<OperatorSnapshotShape>;
   storedSupportSnapshot?(): unknown;
   rewardLedger?(query?: {
+    beforeCycle?: number | null;
     cycle?: number | null;
     distribution?: 1 | 2 | null;
     staker?: string | null;
+    scope?: "selection" | "all" | null;
   }): Promise<unknown>;
   synchronize(options?: {
     signal?: AbortSignal;
@@ -2319,6 +2315,7 @@ export function createServer(options: ServerOptions = {}) {
     };
   });
   function parseRewardLedgerQuery(requestUrl: string): {
+    beforeCycle?: number | null;
     cycle: number | null;
     distribution: 1 | 2 | null;
     staker: string | null;
@@ -2330,6 +2327,9 @@ export function createServer(options: ServerOptions = {}) {
       const distributionText = search.get("distribution");
       const stakerText = search.get("staker");
       const scopeText = search.get("scope");
+      const beforeText = search.get("beforeCycle");
+      const beforeCycle =
+        beforeText === null ? null : z.coerce.number().int().nonnegative().safe().parse(beforeText);
       const scope =
         scopeText === null || scopeText === "selection"
           ? "selection"
@@ -2351,7 +2351,13 @@ export function createServer(options: ServerOptions = {}) {
                   throw new Error("invalid distribution");
                 })();
       const staker = stakerText === null ? null : z.string().min(1).max(200).parse(stakerText);
-      return { cycle, distribution, staker, scope };
+      return {
+        cycle,
+        distribution,
+        staker,
+        scope,
+        ...(beforeCycle === null ? {} : { beforeCycle }),
+      };
     } catch {
       throw new OperatorApiError(400, "invalid_reward_ledger_query");
     }
@@ -2366,38 +2372,33 @@ export function createServer(options: ServerOptions = {}) {
     const ledger = await loadRewardLedger(request);
     return reply.header("cache-control", "no-store").send(ledger);
   });
-  const ledgerExports = [
-    { name: "distributions", csv: rewardLedgerDistributionsCsv },
-    { name: "payments", csv: rewardLedgerPaymentsCsv },
-    { name: "fees", csv: rewardLedgerFeesCsv },
-  ] as const;
-  for (const ledgerExport of ledgerExports) {
-    server.get(`/api/v1/rewards/ledger/${ledgerExport.name}.csv`, async (request, reply) => {
-      const ledger = rewardLedgerSchema.parse(await loadRewardLedger(request));
-      const complete = ledger.fees.historyComplete && !ledger.paymentsTruncated;
-      reply.type("text/csv; charset=utf-8");
-      reply.header("x-sidekick-history-complete", String(complete));
-      reply.header(
-        "content-disposition",
-        `attachment; filename="signer-sidekick-reward-${ledgerExport.name}${complete ? "" : "-partial"}.csv"`,
-      );
-      return ledgerExport.csv(ledger);
-    });
-    server.get(`/api/v1/rewards/ledger/${ledgerExport.name}.json`, async (request, reply) => {
-      const ledger = rewardLedgerSchema.parse(await loadRewardLedger(request));
-      const complete = ledger.fees.historyComplete && !ledger.paymentsTruncated;
-      reply.type("application/json; charset=utf-8");
-      reply.header("x-sidekick-history-complete", String(complete));
-      reply.header(
-        "content-disposition",
-        `attachment; filename="signer-sidekick-reward-${ledgerExport.name}${complete ? "" : "-partial"}.json"`,
-      );
-      return ledgerExport.name === "distributions"
-        ? ledger.cycles.flatMap((cycle) => cycle.distributions)
-        : ledgerExport.name === "payments"
-          ? ledger.payments
-          : { fees: ledger.fees, rows: rewardLedgerFeeRows(ledger) };
-    });
+  for (const name of ["distributions", "payments", "fees"] as const) {
+    for (const format of ["csv", "json"] as const) {
+      server.get(`/api/v1/rewards/ledger/${name}.${format}`, async (request, reply) => {
+        const service = requireFeature(options.service, "operator_service_unavailable");
+        const load = requireFeature(service.rewardLedger, "reward_ledger_unavailable");
+        const prepared = await prepareRewardLedgerExport({
+          query: parseRewardLedgerQuery(request.url),
+          name,
+          format,
+          load: (query) => interactive(request, async () => load.call(service, query)),
+          aborted: () => reply.raw.destroyed,
+        });
+        if (reply.raw.destroyed) {
+          prepared.stream.destroy();
+          return reply;
+        }
+        reply.raw.once("close", () => prepared.stream.destroy());
+        return reply
+          .type(format === "csv" ? "text/csv; charset=utf-8" : "application/json; charset=utf-8")
+          .header("x-sidekick-history-complete", String(prepared.complete))
+          .header(
+            "content-disposition",
+            `attachment; filename="signer-sidekick-reward-${name}${prepared.complete ? "" : "-partial"}.${format}"`,
+          )
+          .send(prepared.stream);
+      });
+    }
   }
   server.get("/api/v1/rewards/staker-claims", async (request, _reply) => {
     const service = requireFeature(options.service, "operator_service_unavailable");

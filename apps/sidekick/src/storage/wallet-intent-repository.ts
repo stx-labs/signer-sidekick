@@ -585,8 +585,17 @@ export class WalletIntentRepository {
 
   /** Submitted work only; prepared and terminal history require no background chain reads. */
   listAwaitingObservation(): StoredWalletIntent[] {
-    return this.db
-      .prepare(`SELECT * FROM browser_wallet_intents AS intent
+    return this.awaitingObservation("*").all().map(mapIntent);
+  }
+
+  listAwaitingObservationIds(): string[] {
+    return (this.awaitingObservation("intent_id").all() as { intent_id: string }[]).map(
+      (row) => row.intent_id,
+    );
+  }
+
+  private awaitingObservation(columns: "*" | "intent_id") {
+    return this.db.prepare(`SELECT ${columns} FROM browser_wallet_intents AS intent
       WHERE txid IS NOT NULL AND (
         state IN ('submitted', 'mempool', 'confirmed', 'reobserve') OR
         (state = 'superseded' AND COALESCE((
@@ -596,9 +605,7 @@ export class WalletIntentRepository {
           ORDER BY observed_at DESC, rowid DESC LIMIT 1
         ), 'submitted') NOT IN ('complete', 'canonical-success', 'abort', 'mismatch', 'superseded'))
       )
-      ORDER BY submitted_at ASC, intent_id ASC`)
-      .all()
-      .map(mapIntent);
+      ORDER BY submitted_at ASC, intent_id ASC`);
   }
 
   listSubmittedEquivalent(input: {
@@ -910,19 +917,15 @@ export class WalletIntentRepository {
     for (let offset = 0; offset < ids.length; offset += sqliteBatchSize) {
       const batch = ids.slice(offset, offset + sqliteBatchSize);
       if (batch.length === 0) continue;
-      const placeholders = batch.map(() => "?").join(", ");
       const rows = this.db
         .prepare(
-          `SELECT observation_id, intent_id, outcome, canonical, block_height,
-                  index_block_hash, evidence_json, observed_at
-           FROM (
-             SELECT *, ROW_NUMBER() OVER (
-               PARTITION BY intent_id ORDER BY observed_at DESC, rowid DESC
-             ) AS activity_rank
-             FROM browser_wallet_intent_observations
-             WHERE intent_id IN (${placeholders})
-           )
-           WHERE activity_rank = 1`,
+          `WITH requested(intent_id) AS (VALUES ${batch.map(() => "(?)").join(",")})
+           SELECT observation.* FROM requested
+           JOIN browser_wallet_intent_observations AS observation ON observation.rowid = (
+             SELECT latest.rowid FROM browser_wallet_intent_observations AS latest
+             WHERE latest.intent_id = requested.intent_id
+             ORDER BY latest.observed_at DESC, latest.rowid DESC LIMIT 1
+           )`,
         )
         .all(...batch);
       for (const row of rows) {

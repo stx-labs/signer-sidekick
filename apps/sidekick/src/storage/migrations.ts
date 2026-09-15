@@ -2449,4 +2449,41 @@ export const migrations: readonly Migration[] = [
         ON settings_audit (revision, changed_at DESC, audit_id DESC);
     `,
   },
+  {
+    version: 43,
+    name: "snapshot_detail_retention_and_history_reads",
+    sql: `
+      -- Unknown legacy position anchors/completeness are preserved, never guessed during pruning.
+      ALTER TABLE staker_position_observations ADD COLUMN chain_anchor_json TEXT
+        CHECK (chain_anchor_json IS NULL OR json_valid(chain_anchor_json));
+      ALTER TABLE staker_position_observations ADD COLUMN reconciliation_complete INTEGER
+        CHECK (reconciliation_complete IN (0, 1));
+      ALTER TABLE staker_position_observations ADD COLUMN position_detail_json TEXT
+        CHECK (position_detail_json IS NULL OR json_valid(position_detail_json));
+      ALTER TABLE staker_position_observations ADD COLUMN history_compacted INTEGER NOT NULL DEFAULT 0
+        CHECK (history_compacted IN (0, 1));
+      ALTER TABLE pool_cycle_snapshots ADD COLUMN history_compacted INTEGER NOT NULL DEFAULT 0
+        CHECK (history_compacted IN (0, 1));
+      CREATE INDEX position_detail_due ON staker_position_observations(observed_at)
+        WHERE history_compacted = 0;
+      CREATE INDEX pool_detail_due ON pool_cycle_snapshots(observed_at)
+        WHERE history_compacted = 0;
+      CREATE INDEX position_detail_neighbors ON staker_position_observations
+        (manager_principal, staker_principal, observed_at, observed_burn_block_height, observed_stacks_tip_height);
+      CREATE INDEX pool_detail_neighbors ON pool_cycle_snapshots
+        (manager_principal, reward_cycle, observed_at, observed_burn_block_height, observed_stacks_tip_height);
+      ALTER TABLE reward_cycle_snapshots ADD COLUMN snapshot_fingerprint TEXT
+        CHECK (snapshot_fingerprint IS NULL OR length(snapshot_fingerprint) = 64);
+      CREATE INDEX activity_chain_time ON chain_events
+        (chain_id, COALESCE(occurred_at, first_seen_at) DESC, tx_id, event_index);
+      CREATE INDEX manager_claim_cycle ON manager_activity_events
+        (chain_id, manager_principal, reward_cycle, block_height DESC, tx_id DESC, event_index DESC)
+        WHERE canonical = 1 AND kind = 'claim-staker-rewards';
+      CREATE INDEX pox_reward_cycle ON chain_events
+        (chain_id, contract_id, json_extract(decoded_payload_json, '$.event.signerManager'),
+          json_extract(decoded_payload_json, '$.event.kind'), json_extract(decoded_payload_json, '$.event.rewardCycle'),
+          block_height DESC, tx_id DESC, event_index DESC)
+        WHERE canonical = 1 AND json_extract(decoded_payload_json, '$.transactionStatus') = 'success';
+    `,
+  },
 ];

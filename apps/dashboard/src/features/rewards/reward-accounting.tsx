@@ -36,7 +36,7 @@ export function RewardFeeLedger({
       .finally(() => setBusy(null));
   };
   const currentCycle = ledger.cycles.find((cycle) => cycle.cycle === ledger.current.cycle) ?? null;
-  const exportComplete = ledger.fees.historyComplete && ledger.fees.indexedPaymentCount <= 100_000;
+  const exportComplete = ledger.fees.historyComplete && ledger.fees.refundsTruncated !== true;
   const facts: Array<{
     label: React.ReactNode;
     key: string;
@@ -185,7 +185,7 @@ export function RewardFeeLedger({
             </button>
           </div>
           <span className="muted">
-            {ledger.cycles.length} cycles · through {shortDate(ledger.generatedAt)}
+            {ledger.cycles.length} loaded cycles · through {shortDate(ledger.generatedAt)}
             {ledger.fees.unmatchedPaymentCount > 0
               ? ` · ${ledger.fees.unmatchedPaymentCount.toLocaleString("en-US")} payments lack fee evidence`
               : !ledger.fees.historyComplete

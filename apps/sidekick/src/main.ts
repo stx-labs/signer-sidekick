@@ -505,7 +505,13 @@ export async function executeCliCommand({
                 if ((await connection.check()).status !== "connected") {
                   throw new Error("The configured connection is not current");
                 }
-                return await service.refreshBackgroundSnapshot();
+                const snapshot = await service.refreshBackgroundSnapshot();
+                try {
+                  store.snapshotHistory.maintain(new Date().toISOString());
+                } catch (error) {
+                  server.log.warn({ err: error }, "Snapshot detail compaction deferred");
+                }
+                return snapshot;
               },
             },
             server.log,
