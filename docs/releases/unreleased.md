@@ -14,7 +14,9 @@
 ## Operator changes
 
 - Mobile Rewards keeps expanded projection values inside their card and stacks the network
-  reward label above its value. The accuracy table scrolls within the card.
+  reward label above its value. Populated accuracy tables and copy feedback stay inside the card.
+- Overview labels estimates with their own weekly distribution, not the last completed calculation.
+  Pending work stays first; completed history is no longer labelled as accruing.
 - Pool/position snapshots keep 21 days of detail, then retain meaningful changes and actual
   cycle/weekly-distribution boundary samples. Unclassifiable legacy rows stay; financial evidence
   and observer receipt identities are not pruned. Identical anchored snapshots avoid repeat writes.

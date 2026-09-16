@@ -137,6 +137,7 @@
 }
 
 .copy-identifier-button {
+  position: relative;
   display: inline-grid;
   flex: 0 0 24px;
   width: 24px;

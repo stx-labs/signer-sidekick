@@ -1,5 +1,8 @@
 import { expect, type Page, test } from "@playwright/test";
-import type { RewardLedger } from "@stx-labs/signer-sidekick-api-contracts";
+import type {
+  RewardCalculationRealization,
+  RewardLedger,
+} from "@stx-labs/signer-sidekick-api-contracts";
 import {
   completedFirstRewardLedger,
   connection,
@@ -239,6 +242,14 @@ test("loads the independent operator Overview without the shared status endpoint
 });
 
 test("uses one Pool-style Rewards action while rewards accrue", async ({ page }) => {
+  await overrideFixtures(page, (request) => {
+    if (request.pathname === "/api/v1/overview")
+      return {
+        ...overview,
+        rewards: { ...overview.rewards, distributionCheckpoint: "second-half" },
+      };
+    return undefined;
+  });
   await page.route("**/api/v1/rewards/ledger*", async (route) => {
     await route.fulfill(fixtureFulfillment(completedFirstRewardLedger(route.request().url())));
   });
@@ -247,6 +258,7 @@ test("uses one Pool-style Rewards action while rewards accrue", async ({ page })
 
   const rewardsSummary = page.locator("#overview-rewards");
   await expect(rewardsSummary.getByRole("heading", { name: "Rewards — accruing" })).toBeVisible();
+  await expect(rewardsSummary).toContainText("Cycle 140 · Second Distribution");
   await expect(rewardsSummary.getByText("Pool if calculated now").locator("..")).toContainText(
     "0.001 sBTC",
   );
@@ -276,6 +288,107 @@ test("uses one Pool-style Rewards action while rewards accrue", async ({ page })
   }
 });
 
+test("keeps the accruing Overview separate from the last completed cycle", async ({
+  page,
+}, testInfo) => {
+  await overrideFixtures(page, (request) => {
+    if (request.pathname !== "/api/v1/rewards/ledger") return undefined;
+    const ledger = structuredClone(responseFor(request.href)) as RewardLedger;
+    // Live shape: current points at the last calculation, and the new cycle has no rows yet.
+    ledger.cycles = ledger.cycles.filter((cycle) => cycle.cycle < 140);
+    ledger.current = { cycle: 139, distribution: 2 };
+    for (const cycle of ledger.cycles)
+      for (const distribution of cycle.distributions)
+        distribution.current = cycle.cycle === 139 && distribution.distribution === 2;
+    return ledger;
+  });
+  await login(page);
+  const card = page.locator("#overview-rewards");
+  await expect(card.getByRole("heading", { name: "Rewards — accruing" })).toBeVisible();
+  await expect(card).toContainText("Cycle 140 · First Distribution");
+  await expect(card.getByText("Pool if calculated now").locator("..")).toContainText("0.001 sBTC");
+  await expect(card.getByText("Projected at calculation").locator("..")).toContainText(
+    "0.0015 sBTC",
+  );
+  await expect(card).not.toContainText("Cycle 139");
+  await expect(card).not.toContainText("payments made");
+  await expect(card).not.toContainText("Your fee");
+  await card.screenshot({ path: testInfo.outputPath("overview-accruing.png") });
+});
+
+test("shows completed evidence when the Overview projection still targets that distribution", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/rewards/ledger*", async (route) => {
+    await route.fulfill(fixtureFulfillment(completedFirstRewardLedger(route.request().url())));
+  });
+  await login(page);
+  const card = page.locator("#overview-rewards");
+  await expect(card.getByRole("heading", { name: "Rewards — complete" })).toBeVisible();
+  await expect(card).toContainText("Cycle 140 · First Distribution");
+  await expect(card).toContainText("40 payments made");
+  await expect(card).not.toContainText("Accruing");
+  await expect(card).not.toContainText("Projected at calculation");
+});
+
+test("does not label completed history as accruing when the projection is unavailable", async ({
+  page,
+}) => {
+  await overrideFixtures(page, (request) => {
+    if (request.pathname === "/api/v1/rewards/ledger")
+      return completedFirstRewardLedger(request.href);
+    if (request.pathname !== "/api/v1/overview") return undefined;
+    return {
+      ...overview,
+      rewards: {
+        ...overview.rewards,
+        rewardCycleId: null,
+        distributionCheckpoint: null,
+        estimatedNetworkRewardSats: null,
+        estimatedPoolRewardSats: null,
+        accruedPoolRewardSats: null,
+        estimatedOperatorFeeSats: null,
+        operatorFeeUnavailableReason: "reward-outlook-unavailable",
+        estimateKind: "unavailable",
+        confidence: "unavailable",
+      },
+    };
+  });
+  await login(page);
+  const card = page.locator("#overview-rewards");
+  await expect(card.getByRole("heading", { name: "Current Reward Distribution" })).toBeVisible();
+  await expect(card).toContainText("Unavailable");
+  await expect(card).not.toContainText("Accruing");
+  await expect(card).not.toContainText("payments made");
+});
+
+for (const projectedCycle of [140, 141]) {
+  test(`does not reuse Cycle ${projectedCycle} First Distribution estimates for an overdue second distribution`, async ({
+    page,
+  }) => {
+    await overrideFixtures(page, (request) => {
+      if (request.pathname === "/api/v1/overview")
+        return { ...overview, rewards: { ...overview.rewards, rewardCycleId: projectedCycle } };
+      if (request.pathname !== "/api/v1/rewards/ledger") return undefined;
+      const ledger = completedFirstRewardLedger(request.href) as RewardLedger;
+      const second = ledger.cycles[0]?.distributions[1];
+      if (!second) throw new Error("Expected the second distribution");
+      second.status = "calculation-overdue";
+      return ledger;
+    });
+    await login(page);
+    const card = page.locator("#overview-rewards");
+    await expect(
+      card.getByRole("heading", { name: "Rewards — calculation overdue" }),
+    ).toBeVisible();
+    await expect(card).toContainText("Cycle 140 · Second Distribution");
+    await expect(card.getByText("Pool if calculated now").locator("..")).toContainText("—");
+    await expect(card.getByText("Projected at calculation").locator("..")).toContainText("—");
+    await expect(card).not.toContainText("0.0015 sBTC");
+    await expect(card).not.toContainText("0.001 sBTC");
+  });
+}
+
 test("shows the prior cycle in history while its last distribution remains pending", async ({
   page,
 }) => {
@@ -285,6 +398,7 @@ test("shows the prior cycle in history while its last distribution remains pendi
 
   await login(page);
   const overview = page.locator("#overview-rewards");
+  await expect(overview).toContainText("Cycle 141 · Second Distribution");
   await expect(overview.getByText("Your fee", { exact: true }).locator("..")).toContainText("—");
   await expect(overview.getByText("To stakers", { exact: true }).locator("..")).toContainText("—");
   await expect(overview).not.toContainText("0.00371 sBTC");
@@ -3164,8 +3278,38 @@ test("keeps expanded reward projections and network facts inside their cards", a
   outlook.poolEstimate.grossSats = "1300000";
   outlook.poolEstimate.stxSats = "1300000";
   outlook.poolEstimate.bondSats = "0";
+  const realizations: RewardCalculationRealization[] = [1, 2].map((distribution) => ({
+    txId: `0x${String(distribution).repeat(64)}`,
+    eventIndex: 0,
+    blockHeight: 4_900 + distribution,
+    indexBlockHash: `0x${"ab".repeat(32)}`,
+    burnBlockHeight: 904_000 + distribution,
+    targetRewardCycle: 139,
+    targetCheckpoint: distribution === 1 ? "first-half" : "second-half",
+    calculationBurnHeight: 904_000 + distribution,
+    observedAt: snapshot.generatedAt,
+    global: {
+      grossAccruedRewardsSats: "181000000",
+      totalBondRewardsSats: "0",
+      totalStxStakerRewardsSats: "181000000",
+      reserveDepositSats: "0",
+    },
+    poolSats: "1890000",
+    poolEstimateUnavailableReason: null,
+    evaluation: {
+      modelRevision: 1,
+      forecastObservedBurnHeight: 903_856 + distribution,
+      leadBlocks: 144,
+      pointErrorSats: "10000",
+      pointErrorBips: "53",
+      rangeContainsActual: true,
+      rangeWidthBips: "2000",
+    },
+  }));
   await overrideFixtures(page, (request) => {
     const body = responseFor(request.href);
+    if (request.pathname === "/api/v1/rewards/ledger")
+      return { ...body, context: { ...body.context, rewardRealizations: realizations } };
     if (request.pathname === "/api/v1/status" || request.pathname === "/api/v1/rewards")
       return { ...body, rewardOutlook: outlook };
     return body;
@@ -3176,6 +3320,15 @@ test("keeps expanded reward projections and network facts inside their cards", a
   const details = page.locator("#rewards-outlook");
   await details.locator("summary").click();
   await expect(details.getByRole("heading", { name: "This projection" })).toBeVisible();
+  await expect(details.locator(".rw-accuracy tbody tr")).toHaveCount(2);
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => sessionStorage.setItem("copied-calculation", value),
+      },
+    });
+  });
   await page.evaluate(() => document.fonts.ready);
 
   const original = page.viewportSize();
@@ -3225,6 +3378,32 @@ test("keeps expanded reward projections and network facts inside their cards", a
         .locator(".rw-earning")
         .screenshot({ path: testInfo.outputPath("mobile-earning-card.png") });
     }
+    const table = details.locator(".rw-accuracy");
+    if (width <= 430) {
+      expect(
+        await table.evaluate((element) => element.scrollWidth - element.clientWidth),
+      ).toBeGreaterThan(0);
+      await table.evaluate((element) => {
+        element.scrollLeft = element.scrollWidth;
+      });
+      expect(await table.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
+    }
+    const copy = table.locator(".copy-identifier-button").first();
+    await copy.focus();
+    await expect(copy).toBeFocused();
+    await copy.press("Enter");
+    await expect(copy.locator('[aria-live="polite"]')).toHaveText(
+      "Copied reward calculation transaction",
+    );
+    await expect
+      .poll(() => page.evaluate(() => sessionStorage.getItem("copied-calculation")))
+      .toBe(realizations[0]?.txId);
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth))
+      .toBeLessThanOrEqual(1);
+    await table.evaluate((element) => {
+      element.scrollLeft = 0;
+    });
   }
 });
 
