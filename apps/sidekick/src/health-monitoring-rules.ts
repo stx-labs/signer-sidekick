@@ -24,8 +24,8 @@ export const HEALTH_RULE_THRESHOLDS = {
   },
   nodeBehindPeers: {
     lagBlocks: 3,
-    minimumSamples: 6,
-    minimumWindowMs: 25_000,
+    minimumSamples: 4,
+    minimumWindowMs: 30_000,
   },
   localNodeStall: {
     minimumWindowMs: 90_000,

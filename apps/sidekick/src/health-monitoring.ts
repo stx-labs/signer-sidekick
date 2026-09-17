@@ -25,7 +25,7 @@ export type {
 } from "./health-monitoring-types.js";
 
 const burnBlockTimingRefreshMs = 5 * 60 * 1_000;
-const defaultPollIntervalMs = 5_000;
+const defaultPollIntervalMs = 10_000;
 const defaultReferencePollIntervalMs = 30_000;
 const restartResolutionWarmupMs = 15 * 60_000;
 
@@ -98,7 +98,9 @@ export class HealthMonitoringService {
     if (!latest?.nodeRpc.reachable || !latest.nodeInfo) return null;
     const age =
       (this.options.now?.() ?? new Date()).getTime() - Date.parse(latest.nodeRpc.checkedAt);
-    return age >= 0 && age <= 2 * defaultPollIntervalMs ? latest.nodeInfo : null;
+    return age >= 0 && age <= 2 * (this.options.pollIntervalMs ?? defaultPollIntervalMs)
+      ? latest.nodeInfo
+      : null;
   }
 
   async refresh(): Promise<HealthSnapshot> {
@@ -244,7 +246,7 @@ export class HealthMonitoringService {
       if (rollup) {
         this.options.store?.healthMonitoring.upsertRollup(configFingerprint, rollup, observedAt);
       }
-      // Retention is maintenance, not part of every five-second read/collection.
+      // Retention is maintenance, not part of every health read/collection.
       if (observedAtMs - this.lastPrunedAt >= 5 * 60_000) {
         this.options.store?.healthMonitoring.prune(observedAt);
         this.lastPrunedAt = observedAtMs;

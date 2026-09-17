@@ -112,7 +112,7 @@ separate chain observer.
 
 ```mermaid
 flowchart LR
-    A[Collect local evidence every 5 seconds] --> D[Normalize timestamped observations]
+    A[Collect local evidence every 10 seconds] --> D[Normalize timestamped observations]
     B[Refresh comparison sources every 30 seconds] --> D
     C[Attach anchored operator context] --> D
     D --> E[Persist raw observations]
@@ -126,12 +126,12 @@ flowchart LR
 ### 1. Collect
 
 The server owns collection. It begins with the Sidekick control plane and continues without an open
-browser or an operational manager connection. Cheap local endpoints are polled every five seconds;
+browser or an operational manager connection. Cheap local endpoints are polled every ten seconds;
 public and configured comparison APIs are refreshed every 30 seconds. After either API returns a
 rate-limit response, reference polling backs off to at least 60 seconds while local collection
 continues normally.
 
-When a 30-second reference sample is reused in intervening five-second observations, its original
+When a 30-second reference sample is reused in intervening ten-second observations, its original
 `checkedAt` remains unchanged. Reuse does not become a new success, failure, or independent sample.
 
 ### 2. Normalize and retain
@@ -230,7 +230,7 @@ Support-bundle export reads stored evidence and never collects or reconciles hea
 
 | Observed evidence | Classification | Reasoning |
 | --- | --- | --- |
-| Local node is at least 3 blocks behind its most advanced connected peer for 25 seconds | `likely-local-node` | The node's own peer view shows a sustained local gap |
+| Local node is at least 3 blocks behind its most advanced connected peer for 4 samples spanning 30 seconds | `likely-local-node` | The node's own peer view shows a sustained local gap |
 | Local node has not advanced for 90 seconds while Hiro or a connected peer advances | `likely-local-node` | Independent progress contradicts the local stall |
 | Local node advances while an indexed API remains at least 3 blocks behind for 90 seconds | informational `source-disagreement` | The comparison source is stale; it cannot make the healthy local node unhealthy |
 | Local node and at least two distinct peer/reference signals remain stalled for 180 seconds | `suspected-network-wide` | Multiple signals support a broader progression problem, while the wording preserves uncertainty |
@@ -289,7 +289,7 @@ known.
 
 | Area | Current assumption | Question for the Core/signer team |
 | --- | --- | --- |
-| Connected-peer height | `/v3/health.difference_from_max_peer` is a safe local-node lag signal. A gap of 3 Stacks blocks across 6 samples and 25 seconds is actionable. | Can tenure changes, reorgs, or peer-selection behavior produce this gap during normal operation? Is another field or persistence window more reliable? |
+| Connected-peer height | `/v3/health.difference_from_max_peer` is a safe local-node lag signal. A gap of 3 Stacks blocks across 4 samples and 30 seconds is actionable. | Can tenure changes, reorgs, or peer-selection behavior produce this gap during normal operation? Is another field or persistence window more reliable? |
 | Signer heartbeat | `/heartbeat` returning `OK` proves only that the signer can reach its configured node; it does not prove participation. | Is that the complete and stable endpoint contract? Which failures can still exist while it returns `OK`? |
 | Proposal and response counters | `stacks_signer_block_proposals_received` and `stacks_signer_block_responses_sent{response_type}` support a conservative missing-response lower bound after a 30-second settling window. | Does every actionable proposal increment once, and which normal paths can intentionally produce neither an accepted nor rejected response? |
 | Expected-signer silence | A signer proved to be in the current set should see proposals. No proposal-counter change for 10 minutes while the local node advances at least 12 times is a critical local participation finding. | Are there legitimate protocol windows where an expected signer sees no proposals this long? Should the rule count a different chain or tenure event? |
@@ -312,6 +312,13 @@ shows they produce a wrong operator action:
 - host/process remediation and unrestricted log collection remain outside Sidekick.
 
 ### Changing the model
+
+September 17, 2026 calibration: node-vm made about 172 local upstream calls/minute,
+including 72 routine health reads. Ten-second collection halves the health reads;
+the operator accepted the lower resolution. Peer-lag detection uses four samples
+over 30 seconds (previously six over 25), avoiding an unintended 50-second delay.
+Three-sample signer-configuration findings now take at least 20 seconds at the
+default cadence. Other duration gates and fresh transaction checks are unchanged.
 
 When proposing a model change, reviewers should answer:
 

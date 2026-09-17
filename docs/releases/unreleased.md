@@ -13,6 +13,9 @@
 
 ## Operator changes
 
+- Routine local health polling runs every ten seconds instead of five, halving its request rate.
+  Peer-lag findings require four samples spanning 30 seconds; gap checks reuse health samples for
+  up to twenty seconds. Fresh transaction checks and external API cadence are unchanged.
 - Mobile Rewards keeps expanded projection values inside their card and stacks the network
   reward label above its value. The accuracy table scrolls within the card.
 - Pool/position snapshots keep 21 days of detail, then retain meaningful changes and actual
@@ -30,7 +33,7 @@
   requests are limited to once per minute; retained callbacks and financial records are unchanged.
 - Background reward/forecast collection reuses identical anchored contract reads and limits its
   concurrent reads to eight. Observer-gap checks reuse recent health samples. Explicit preparation,
-  canonical verification, five-second health sampling and callback freshness targets are unchanged.
+  canonical verification and callback freshness targets are unchanged.
 - Reviewed managers accept exact or canonical program matches, including supported comment and
   whitespace variants. Execution environment and required functions still match; sealed actions
   retain the deployed raw source hash. Changed interpretation replays retained history, including
