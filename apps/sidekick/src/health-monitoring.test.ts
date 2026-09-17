@@ -22,7 +22,12 @@ afterEach(async () => {
 });
 
 describe("HealthMonitoringService", () => {
-  it("keeps an active incident open while evidence warms after a long restart gap", async () => {
+  it.each([
+    null,
+    20_000,
+    30_000,
+    30_001,
+  ])("holds restart resolution only beyond three polling intervals (last sample age %s)", async (sampleAgeMs) => {
     const server = createServer((request, response) => {
       response.setHeader("content-type", "application/json");
       if (request.url === "/v2/info") {
@@ -86,6 +91,12 @@ describe("HealthMonitoringService", () => {
       openedAt,
     );
     if (!episode) throw new Error("expected active finding episode");
+    if (sampleAgeMs !== null) {
+      store.healthMonitoring.recordObservation(
+        fingerprint,
+        await collectHealthObservation(config, new Date(now - sampleAgeMs).toISOString()),
+      );
+    }
 
     const health = new HealthMonitoringService({
       getConfig: () => config,
@@ -94,12 +105,15 @@ describe("HealthMonitoringService", () => {
     });
     const snapshot = await health.refresh();
 
-    expect(snapshot.findings).toContainEqual(
-      expect.objectContaining({ id: finding.id, episodeId: episode.episodeId }),
-    );
+    const shouldHold = sampleAgeMs === null || sampleAgeMs > 30_000;
+    expect(snapshot.findings.some(({ id }) => id === finding.id)).toBe(shouldHold);
     expect(
       snapshot.history.recentEpisodes.find(({ episodeId }) => episodeId === episode.episodeId),
-    ).toMatchObject({ status: "active", occurrences: 1, lastObservedAt: openedAt });
+    ).toMatchObject({
+      status: shouldHold ? "active" : "resolved",
+      occurrences: 1,
+      lastObservedAt: openedAt,
+    });
   });
 
   it("uses a 24-hour burn-block sample and falls back to 12 hours", () => {
@@ -560,9 +574,9 @@ stacks_signer_agreement_capitulation_latencies_histogram_bucket{le="+Inf"} ${acc
       now: () => new Date(now),
     });
 
-    for (let sample = 0; sample < 5; sample += 1) {
+    for (let sample = 0; sample < 3; sample += 1) {
       expect((await health.refresh()).findings).toEqual([]);
-      now += 5_000;
+      now += 10_000;
     }
     const active = await health.refresh();
     expect(active.findings).toContainEqual(
@@ -574,7 +588,7 @@ stacks_signer_agreement_capitulation_latencies_histogram_bucket{le="+Inf"} ${acc
     // Background reconciliation temporarily clears the cached operator snapshot. This context
     // transition must not look like a deployment change or resolve a continuing incident.
     operatorContext = null;
-    now += 5_000;
+    now += 10_000;
     const withoutCachedContext = await health.refresh();
     expect(
       withoutCachedContext.findings.find(({ id }) => id === "node-behind-network")?.episodeId,
@@ -584,7 +598,7 @@ stacks_signer_agreement_capitulation_latencies_histogram_bucket{le="+Inf"} ${acc
     ).toMatchObject({ status: "active", resolvedAt: null });
 
     fullySynced = true;
-    now += 5_000;
+    now += 10_000;
     expect((await health.refresh()).findings).not.toContainEqual(
       expect.objectContaining({ id: "node-behind-network" }),
     );

@@ -15,7 +15,7 @@ detailed signer-network exploration belongs in [Slotwatch](https://slotwatch.dev
 
 ## Evidence model
 
-Sidekick polls cheap local node and signer endpoints every five seconds. Public/configured API
+Sidekick polls cheap local node and signer endpoints every ten seconds. Public/configured API
 references are refreshed every 30 seconds and back off to at least 60 seconds after a rate-limit
 response, honoring a finite Retry-After up to five minutes. Their original successful `checkedAt`
 time is retained between polls; reusing a reference sample
@@ -34,7 +34,7 @@ GETs reuse the published diagnosis and original evidence timestamps; they do not
 windows and database aggregates on every page poll. Collection publishes the next diagnosis,
 retains the last result on a transient failure, and cannot publish an old deployment's in-flight
 result under new settings. Database retention maintenance runs at most once every five minutes,
-not on every five-second collection. Evidence age remains visible; a cache hit is not a new sample.
+not on every ten-second collection. Evidence age remains visible; a cache hit is not a new sample.
 
 | Source | Role | Authority |
 | --- | --- | --- |
@@ -85,13 +85,13 @@ The current thresholds are deliberately closed and operator-readable:
 | `signer-monitoring-unavailable` | Signer monitoring unavailable | at least 3 consecutive failures spanning 60 seconds |
 | `signer-node-heartbeat-failed` | Signer cannot reach its node | at least 3 consecutive failures spanning 60 seconds |
 | `signer-metrics-unavailable` | Signer metrics unavailable | at least 3 consecutive failures spanning 60 seconds; suppressed when all signer monitoring is unavailable |
-| `node-behind-network` | Local node behind connected peers | gap of at least 3 Stacks blocks for 6 samples spanning at least 25 seconds |
+| `node-behind-network` | Local node behind connected peers | gap of at least 3 Stacks blocks for 4 samples spanning at least 30 seconds |
 | `node-tip-stalled-locally` | Local node tip stall | 90 seconds plus at least one advancing peer/API signal |
 | `network-tip-stalled` | Suspected network stall | 180 seconds plus at least two distinct stalled peer/API signals |
 | `local-canonical-tip-changed` | Possible local reorg | one consecutive successful-node height regression or same-height hash change; informational |
 | `canonical-tip-disagreement` | Canonical hash disagreement | 3 independent reference checks spanning at least 60 seconds at the same Stacks height |
 | `reference-api-behind-local-node` / `configured-api-behind-local-node` | Comparison API behind local node | at least 3 Stacks blocks for 90 seconds while the local node advances |
-| `signer-identity-mismatch` / `signer-network-mismatch` / `signer-reward-cycle-mismatch` | Signer configuration mismatch | 3 samples spanning at least 10 seconds against node-proved context |
+| `signer-identity-mismatch` / `signer-network-mismatch` / `signer-reward-cycle-mismatch` | Signer configuration mismatch | 3 samples spanning at least 10 seconds against node-proved context (20 seconds at the default cadence) |
 | `signer-node-view-behind` | Signer node view behind local node | at least 3 Stacks blocks across 3 signer-height updates spanning at least 2 minutes; 2 healthy updates resolve it |
 | `signer-proposal-response-gap` | Proposal/response gap | at least 5 proposals and a conservative lower bound of 3 unaccounted-for responses in 15 minutes after a 30-second settling window |
 | `expected-signer-silent` | Expected signer receives no proposals | signer is expected in the current set, metrics remain available, the proposal counter is static for 10 minutes, and the local node advances at least 12 times |
@@ -143,7 +143,7 @@ status in its body, but a warning finding does not make the probe fail; connecti
 `operational-startup-pending` until a background startup attempt succeeds. A node outage must not
 make `/health/ready` fail because Sidekick remains the diagnostic surface during that outage.
 
-The five-second collector starts with the Sidekick control plane and remains server-owned even when
+The ten-second collector starts with the Sidekick control plane and remains server-owned even when
 the manager connection is not yet operational or no browser is open. Manager readiness gates
 money-moving operations, not node and signer diagnosis.
 

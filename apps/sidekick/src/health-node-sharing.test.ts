@@ -15,7 +15,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function fixture() {
+function fixture(pollIntervalMs?: number) {
   let now = Date.parse("2026-09-14T12:00:00Z");
   const config = {
     network: "mainnet",
@@ -52,7 +52,11 @@ function fixture() {
     signerMetricsSource: null,
   });
   vi.mocked(collectHealthObservation).mockImplementation(async () => observation());
-  const health = new HealthMonitoringService({ getConfig: () => config, now: () => new Date(now) });
+  const health = new HealthMonitoringService({
+    getConfig: () => config,
+    now: () => new Date(now),
+    ...(pollIntervalMs === undefined ? {} : { pollIntervalMs }),
+  });
   return {
     health,
     config,
@@ -69,11 +73,11 @@ describe("advisory node sample reuse", () => {
     expect(health.recentNodeInfo()).toBeNull();
     await health.refresh();
     expect(health.recentNodeInfo()?.stacks_tip_height).toBe(200);
-    advance(10_000);
+    advance(20_000);
     expect(health.recentNodeInfo()).not.toBeNull();
     advance(1);
     expect(health.recentNodeInfo()).toBeNull();
-    advance(-10_002);
+    advance(-20_002);
     expect(health.recentNodeInfo()).toBeNull();
     advance(1);
     config.nodeRpcUrl = "http://changed.invalid";
@@ -89,10 +93,11 @@ describe("advisory node sample reuse", () => {
     expect(collectHealthObservation).toHaveBeenCalledTimes(3);
   });
 
-  it("avoids 240 duplicate gap-monitor requests/hour without fabricating health samples, and falls back when collection stops", async () => {
+  it("collects 360 times/hour while avoiding 240 duplicate gap checks, then falls back when collection stops", async () => {
     vi.useFakeTimers();
     const { health, advance } = fixture();
-    await health.refresh();
+    health.start();
+    await vi.advanceTimersByTimeAsync(0);
     const fallback = vi.fn(async () => ({ stacks_tip_height: 201 }));
     const monitor = new ObserverGapMonitor({
       getNode: () => ({ getInfo: async () => health.recentNodeInfo() ?? (await fallback()) }),
@@ -100,20 +105,36 @@ describe("advisory node sample reuse", () => {
       logger: { warn: vi.fn() },
     });
     monitor.start();
-    for (let second = 0; second < 3600; second += 5) {
-      if (second > 0) {
-        advance(5000);
-        await health.refresh();
+    try {
+      for (let second = 0; second < 3600; second += 5) {
+        if (second > 0) advance(5000);
+        await vi.advanceTimersByTimeAsync(second === 0 ? 0 : 5000);
       }
-      await vi.advanceTimersByTimeAsync(second === 0 ? 0 : 5000);
+      expect(collectHealthObservation).toHaveBeenCalledTimes(360);
+      expect(
+        vi
+          .mocked(collectHealthObservation)
+          .mock.calls.filter(([, , options]) => options?.includeReferences),
+      ).toHaveLength(120);
+      expect(monitor.status().checksTotal).toBe(240);
+      expect(fallback).not.toHaveBeenCalled();
+      health.stop();
+      advance(25_000);
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(fallback).toHaveBeenCalledOnce();
+      expect(monitor.status().nodeStacksHeight).toBe(201);
+    } finally {
+      health.stop();
+      await monitor.stop();
     }
-    expect(collectHealthObservation).toHaveBeenCalledTimes(720);
-    expect(monitor.status().checksTotal).toBe(240);
-    expect(fallback).not.toHaveBeenCalled();
-    advance(15_000);
-    await vi.advanceTimersByTimeAsync(15_000);
-    expect(fallback).toHaveBeenCalledOnce();
-    expect(monitor.status().nodeStacksHeight).toBe(201);
-    await monitor.stop();
+  });
+
+  it("uses the configured collection cadence for advisory sample freshness", async () => {
+    const { health, advance } = fixture(15_000);
+    await health.refresh();
+    advance(30_000);
+    expect(health.recentNodeInfo()).not.toBeNull();
+    advance(1);
+    expect(health.recentNodeInfo()).toBeNull();
   });
 });

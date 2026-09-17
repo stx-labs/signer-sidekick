@@ -222,8 +222,8 @@ reads share a 30-second advisory result, without caching fresh preparation or tr
 The Bitcoin timing display refreshes one recent page every five minutes and reconciles its
 200-block window hourly; changed overlap triggers a full refresh.
 
-Local health samples remain every five seconds. Observer-gap checks reuse a successful node sample
-up to ten seconds old, falling back to RPC if it is missing, failed, stale or from another configuration.
+Local health samples are collected every ten seconds. Observer-gap checks reuse a successful node sample
+up to twenty seconds old, falling back to RPC if it is missing, failed, stale or from another configuration.
 Background reward/forecast reads share at most 512 contract values for one node and exact block hash,
 for up to five minutes, with eight concurrent reads. Canonicality is checked before reuse; local
 projections still rebuild. Failures/reorgs clear the cache. Explicit refresh and preparation bypass it.
