@@ -17,7 +17,7 @@ import { loadRewardLedger } from "../rewards/reward-ledger-api.js";
 import {
   allocationRoundingNote,
   calculatedPoolTotal,
-  currentDistribution,
+  checkpointIndex,
   type DistributionCardModel,
   deriveDistributionCards,
   distributionAllocation,
@@ -119,26 +119,42 @@ export function RewardsOverviewCard({
     );
   const cards = deriveDistributionCards({ ledger, gasWallet, engineMode, activeRun });
   const card = cards[0] ?? null;
-  const state = card?.state ?? "accruing";
-  const distribution = card
-    ? (ledger.cycles
-        .find((entry) => entry.cycle === card.cycle)
-        ?.distributions.find((d) => d.distribution === card.distribution) ?? null)
-    : currentDistribution(ledger);
-  if (!distribution) return <>{fallback}</>;
-  const cycleNumber = card?.cycle ?? ledger.current.cycle;
+  // Ledger.current follows the latest calculation, not necessarily the accruing period.
+  // Pending work wins; otherwise use the estimate's own cycle/checkpoint, even without ledger rows.
+  const cycleNumber = card?.cycle ?? rewards.rewardCycleId;
+  const distributionIndex =
+    card?.distribution ??
+    (rewards.distributionCheckpoint === null
+      ? null
+      : checkpointIndex(rewards.distributionCheckpoint));
+  if (cycleNumber === null || distributionIndex === null) return <>{fallback}</>;
   const cycle = ledger.cycles.find((entry) => entry.cycle === cycleNumber) ?? null;
-  const calculated = distribution.calculation.state === "done";
+  const distribution =
+    cycle?.distributions.find((d) => d.distribution === distributionIndex) ?? null;
+  const calculated = distribution?.calculation.state === "done";
+  const state = card?.state ?? (calculated ? "complete" : "accruing");
+  const projectionMatches =
+    cycleNumber === rewards.rewardCycleId &&
+    rewards.distributionCheckpoint !== null &&
+    distributionIndex === checkpointIndex(rewards.distributionCheckpoint);
   const primaryAction = card?.primary ?? card?.secondary?.action ?? null;
   const startRun = () => {
     if (primaryAction) storeRewardHandoff(primaryAction, cacheScope);
     location.hash = domainHash("rewards", "claims");
   };
-  const allocation = distributionAllocation(distribution);
-  const roundingNote = allocationRoundingNote(allocation);
+  const allocation = distribution ? distributionAllocation(distribution) : null;
+  const roundingNote = allocation ? allocationRoundingNote(allocation) : null;
   const cycleCalculated = cycle ? calculatedPoolTotal(cycle.distributions) : null;
-  const headline = card ? card.headline : "Accruing — nothing to do until the network calculates";
-  const badge = card ? card.badge : { tone: "neutral" as const, label: "Accruing" };
+  const headline = card
+    ? card.headline
+    : calculated
+      ? "Distribution complete"
+      : "Accruing — nothing to do until the network calculates";
+  const badge = card
+    ? card.badge
+    : calculated
+      ? { tone: "success" as const, label: "Complete" }
+      : { tone: "neutral" as const, label: "Accruing" };
   const execution = card?.execution ?? null;
   return (
     <section
@@ -158,16 +174,16 @@ export function RewardsOverviewCard({
       ) : null}
       <div className="overview-domain-primary">
         <span>
-          Cycle {cycleNumber} · {distributionName(distribution.distribution)}
+          Cycle {cycleNumber} · {distributionName(distributionIndex)}
         </span>
         <strong>{headline}</strong>
         <small>
-          {distribution.status === "interpretation-unavailable"
+          {distribution?.status === "interpretation-unavailable"
             ? distribution.statusDetail
             : calculated
               ? `${amount(distribution.calculation.poolSats)} calculated for this pool · ${distribution.payments.outstanding > 0 ? `${distribution.payments.outstanding} payments waiting` : `${distribution.payments.made} payments made`}`
-              : rewards.estimatedPoolRewardSats
-                ? `projected ${amount(rewards.estimatedPoolRewardSats)} for this pool · ${rewards.confidence === "unavailable" ? "projection unavailable" : `${rewards.confidence} confidence`}`
+              : projectionMatches && rewards.estimatedPoolRewardSats
+                ? `${rewards.estimateKind === "checkpoint-forecast" ? "projected" : "if calculated now:"} ${amount(rewards.estimatedPoolRewardSats)} for this pool · ${rewards.confidence} confidence`
                 : "projection unavailable"}
         </small>
         {cards.length > 1 ? (
@@ -178,7 +194,7 @@ export function RewardsOverviewCard({
         ) : null}
       </div>
       <dl>
-        {calculated ? (
+        {calculated && allocation ? (
           <>
             <div>
               <dt>
@@ -213,17 +229,21 @@ export function RewardsOverviewCard({
               <dt>Pool if calculated now</dt>
               <dd>
                 {amount(
-                  rewards.accruedPoolRewardSats ??
-                    (rewards.estimateKind === "if-calculated-now"
-                      ? rewards.estimatedPoolRewardSats
-                      : null),
+                  projectionMatches
+                    ? (rewards.accruedPoolRewardSats ??
+                        (rewards.estimateKind === "if-calculated-now"
+                          ? rewards.estimatedPoolRewardSats
+                          : null))
+                    : null,
                 )}
               </dd>
             </div>
             <div>
               <dt>Projected at calculation</dt>
               <dd>
-                {rewards.estimateKind === "checkpoint-forecast" && rewards.estimatedPoolRewardSats
+                {projectionMatches &&
+                rewards.estimateKind === "checkpoint-forecast" &&
+                rewards.estimatedPoolRewardSats
                   ? amount(rewards.estimatedPoolRewardSats)
                   : "—"}
               </dd>

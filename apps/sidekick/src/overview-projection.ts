@@ -612,8 +612,13 @@ function rewardsSummary(snapshot: DashboardSnapshot): OverviewPage["rewards"] {
         ? "needs-attention"
         : "ready"
       : "unavailable",
+    // The last calculation may belong to the previous cycle; label the estimate's own target.
     rewardCycleId:
-      outlook?.calculation.targetRewardCycle ?? rewards?.calculation.targetRewardCycle ?? null,
+      forecast?.targetRewardCycle ??
+      currentEstimate?.targetRewardCycle ??
+      outlook?.calculation.next?.targetRewardCycle ??
+      rewards?.calculation.next?.targetRewardCycle ??
+      null,
     estimatedNetworkRewardSats:
       forecast?.globalSats.point ?? (currentEstimate ? outlook?.accrued.globalSats : null) ?? null,
     estimatedPoolRewardSats: checkpointPoolSats,

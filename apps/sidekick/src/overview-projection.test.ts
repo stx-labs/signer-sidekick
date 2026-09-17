@@ -762,7 +762,11 @@ describe("Overview projection", () => {
           evaluationToleranceBlocks: 12,
         },
       },
-      calculation: value.rewards.calculation,
+      calculation: {
+        ...value.rewards.calculation,
+        targetRewardCycle: 140,
+        targetCheckpoint: "second-half",
+      },
     };
     const valueWithOutlook: DashboardSnapshot = { ...value, rewards: null, rewardOutlook: outlook };
     const result = projectOverview({
@@ -774,6 +778,7 @@ describe("Overview projection", () => {
 
     expect(result.rewards).toMatchObject({
       status: "ready",
+      rewardCycleId: 141,
       estimatedNetworkRewardSats: "3000",
       estimatedPoolRewardSats: "600",
       accruedPoolRewardSats: "500",
@@ -810,6 +815,7 @@ describe("Overview projection", () => {
       projectOverview({ snapshot: valueWithOutlook, health: health(), connection: null }).rewards,
     ).toMatchObject({
       estimatedNetworkRewardSats: "2500",
+      rewardCycleId: 141,
       estimatedPoolRewardSats: "500",
       distributionCheckpoint: "first-half",
       estimateKind: "if-calculated-now",
@@ -842,6 +848,7 @@ describe("Overview projection", () => {
     });
     expect(() => overviewPageSchema.parse(currentEstimate)).not.toThrow();
 
+    outlook.poolEstimate.targetRewardCycle = 142;
     outlook.poolEstimate.targetCheckpoint = "second-half";
     const secondHalf = projectOverview({
       snapshot: { ...value, rewardOutlook: outlook },
@@ -849,10 +856,33 @@ describe("Overview projection", () => {
       connection: null,
     });
     expect(secondHalf.rewards).toMatchObject({
+      rewardCycleId: 142,
       estimatedPoolRewardSats: "500",
       distributionCheckpoint: "second-half",
     });
     expect(() => overviewPageSchema.parse(secondHalf)).not.toThrow();
+
+    outlook.poolEstimate = null;
+    outlook.poolEstimateUnavailableReason = "anchored-inputs-unavailable";
+    outlook.operatorFeeEstimate = null;
+    outlook.operatorFeeEstimateUnavailableReason = "anchored-fee-inputs-unavailable";
+    const unavailable = projectOverview({
+      snapshot: valueWithOutlook,
+      health: health(),
+      connection: null,
+    });
+    expect(unavailable.rewards).toMatchObject({
+      rewardCycleId: 141,
+      distributionCheckpoint: null,
+      estimatedPoolRewardSats: null,
+      estimateKind: "unavailable",
+    });
+    expect(() => overviewPageSchema.parse(unavailable)).not.toThrow();
+    outlook.calculation.next = null;
+    expect(
+      projectOverview({ snapshot: valueWithOutlook, health: health(), connection: null }).rewards
+        .rewardCycleId,
+    ).toBeNull();
   });
 
   it("suppresses derived safe-mode noise but retains ambiguity and Activity coverage warnings", () => {
