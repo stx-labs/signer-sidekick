@@ -264,7 +264,7 @@ export function GasWalletSettings({
           detail={
             observe
               ? "enable operator-run in the deployment and restart before signing"
-              : "signs only reward calls in a run you approve"
+              : "signs only reward calls in approved runs"
           }
           name="Signing"
           status={observe ? "Observe mode" : status.enabled ? "Enabled" : "Disabled"}

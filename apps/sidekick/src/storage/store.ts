@@ -28,6 +28,7 @@ import { ManagerTrustRepository } from "./manager-trust-repository.js";
 import { type Migration, migrations } from "./migrations.js";
 import { ObserverInboxRepository } from "./observer-inbox-repository.js";
 import { RewardRunRepository } from "./reward-run-repository.js";
+import { RewardScheduleRepository } from "./reward-schedule-repository.js";
 import { RuntimeSettingsRepository } from "./runtime-settings-repository.js";
 import { SbtcWithdrawalCompletionRepository } from "./sbtc-withdrawal-completion-repository.js";
 import { SnapshotHistoryRepository } from "./snapshot-history-repository.js";
@@ -1697,6 +1698,7 @@ export class SidekickStore {
   readonly gasWalletSweeps: GasWalletSweepRepository;
   readonly runtimeSettings: RuntimeSettingsRepository;
   readonly rewardRuns: RewardRunRepository;
+  readonly rewardSchedule: RewardScheduleRepository;
   readonly managerTrust: ManagerTrustRepository;
   readonly chainState: ChainStateRepository;
   readonly sbtcWithdrawalCompletions: SbtcWithdrawalCompletionRepository;
@@ -1713,6 +1715,7 @@ export class SidekickStore {
     this.gasWalletSweeps = new GasWalletSweepRepository(db);
     this.runtimeSettings = new RuntimeSettingsRepository(db);
     this.rewardRuns = new RewardRunRepository(db);
+    this.rewardSchedule = new RewardScheduleRepository(db);
     this.managerTrust = new ManagerTrustRepository(db);
     this.chainState = new ChainStateRepository(db);
     this.sbtcWithdrawalCompletions = new SbtcWithdrawalCompletionRepository(db);

@@ -50,6 +50,7 @@ export {
   operationReadinessCheckSchema,
   operationReadinessSchema,
 } from "./engine.js";
+export * from "./reward-actions.js";
 export type {
   RewardRun,
   RewardRunAccountBound,
@@ -80,6 +81,7 @@ export {
   rewardRunStatusSchema,
   transactionExecutionSourceSchema,
 } from "./reward-runs.js";
+export * from "./reward-schedule.js";
 export type {
   ActivityCoverage,
   ActivityCoverageSource,

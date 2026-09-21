@@ -36,8 +36,9 @@ authority: current state is still proved with anchored local-node reads, and per
 plus API backfill cover gaps and reorgs.
 
 Observe remains the default. Optional operator-run signs only permissionless reward calls from one
-operator-approved, sealed recipe with a dedicated low-balance gas wallet. It does not add unattended
-authority or custody of signer or manager-admin keys.
+approved, sealed recipe with a dedicated low-balance gas wallet. Approval is manual or through the
+explicitly enabled [reward schedule](../architecture/decisions/0011-scheduled-reward-runs.md).
+Signer and manager-admin keys remain outside Sidekick.
 
 ## Product test
 
@@ -98,7 +99,7 @@ products. The Overview answers “what needs attention now?”; other pages expl
 - Signer-protocol health from node RPC, signer monitoring, calibrated metrics, and independent
   network-reference evidence, without overstating certainty.
 - Actionable alerts and a comprehensive redacted support snapshot.
-- Observe as the default; operator-run only after approval of one sealed recipe with reviewed adapters.
+- Observe as the default; manual or opt-in scheduled approval of sealed runs with reviewed adapters.
 
 ### Out of scope
 

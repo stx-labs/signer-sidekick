@@ -19,8 +19,12 @@ When a pull request touches any of the following, review it against this list be
 - one-in-flight nonce handling, external completion, ambiguous broadcast, restart, and resume;
 - CSRF/auth boundaries and exclusion of keys or signed bytes from APIs, logs, Activity, and support
   exports; and
+- scheduled approval: explicit opt-in bound to deployment identity, no adoption of manual
+  preparations, exact recipe hash, restart/disable races, durable stop on halted/expired work,
+  unresolved-attempt protection, and truthful Activity attribution;
 - regtest/Devnet coverage for calculate, collect, distribute, settle, reclaim, pause, and recovery.
 
 Paths that usually carry these changes: `apps/sidekick/src/transaction-engine/**`,
-`apps/sidekick/src/gas-wallet*`, `packages/protocol/src/reward-operation-plan.ts`, and the
+`apps/sidekick/src/gas-wallet*`, `apps/sidekick/src/reward-schedule*`,
+`packages/protocol/src/reward-operation-plan.ts`, and the
 adapter sources under `packages/protocol/src/`.

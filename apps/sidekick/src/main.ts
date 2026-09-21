@@ -56,6 +56,8 @@ import {
 import { readPoolForecast } from "./pool-forecast.js";
 import { indexedWorkflowsReady, runOperatorPreflight } from "./preflight.js";
 import { withInteractiveRequestDeadline } from "./request-context.js";
+import { RewardScheduleService } from "./reward-schedule.js";
+import { selectScheduledRewardAction } from "./reward-schedule-selection.js";
 import { readStxRewardStatus } from "./reward-status.js";
 import { RuntimeSettingsController } from "./runtime-settings.js";
 import { createServer } from "./server.js";
@@ -420,6 +422,43 @@ export async function executeCliCommand({
         maximumRunHours: engine.maximumRunHours,
         logger: { warn: (message) => warnGasWallet(message) },
       });
+      const rewardSchedule = new RewardScheduleService({
+        repository: store.rewardSchedule,
+        runs: rewardRuns,
+        identity: () => {
+          const wallet = store.gasWallet.get();
+          return wallet
+            ? `${effectiveConfig.network}:${chainId}:${managerPrincipal}:${wallet.principal}`
+            : null;
+        },
+        unavailable: () => {
+          if (engine.requestedMode !== "operator-run") return "Operator-run mode is required.";
+          const wallet = store.gasWallet.get();
+          if (!wallet?.enabled) return "Enable the gas wallet before scheduling reward runs.";
+          const unresolved = store.rewardSchedule.unresolvedExpiredRun(wallet.principal);
+          if (unresolved)
+            return `Expired run ${unresolved} has unresolved transaction evidence. Review it before scheduling more work.`;
+          const forced = store.transactionEngine.getForceObserveControl();
+          return forced ? `Force Observe is active: ${forced.reason}` : null;
+        },
+        walletBusy: () => {
+          const wallet = store.gasWallet.get();
+          return Boolean(
+            (wallet && store.rewardRuns.active(wallet.principal)) ||
+              store.gasWalletSweeps.active() ||
+              store.rewardRuns.pendingPreparations().length,
+          );
+        },
+        select: async (beforeCycle) => {
+          // A completed run must not immediately prepare again from an old ledger snapshot.
+          await service.snapshot(true);
+          return selectScheduledRewardAction(await service.rewardLedger({ beforeCycle }));
+        },
+        onError: (error) =>
+          warnGasWallet(
+            `Reward schedule: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+      });
       const server = createServer({
         service,
         activityProjection,
@@ -427,6 +466,7 @@ export async function executeCliCommand({
         deploymentRequirements,
         gasWallet,
         rewardRuns,
+        rewardSchedule,
         isOperational: () => operationalStarted,
         onConnectionAssessed: async (result) => {
           if (result.status === "connected") await startOperationalRuntime();
@@ -520,6 +560,7 @@ export async function executeCliCommand({
             },
           );
           operationalStarted = true;
+          rewardSchedule.start();
           server.log.info("Connection established; operator background services are enabled");
           void service
             .observeManagerTrustState()
@@ -560,6 +601,7 @@ export async function executeCliCommand({
         await operationalStartPromise?.catch(() => undefined);
         snapshotRefresh?.stop();
         health.stop();
+        await rewardSchedule.stop();
         await rewardRuns.stop();
         try {
           await observerServer?.close();

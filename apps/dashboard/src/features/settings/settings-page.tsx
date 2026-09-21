@@ -764,7 +764,7 @@ export function SettingsPage({
                         : "Unavailable"}
                   <small>
                     {engineStatus?.mode === "operator-run"
-                      ? "signs only a sealed recipe you approve"
+                      ? "signs only approved sealed recipes"
                       : "signs nothing · reward calls use your own wallet"}
                   </small>
                 </dd>

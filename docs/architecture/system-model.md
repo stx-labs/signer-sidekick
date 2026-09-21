@@ -61,5 +61,5 @@ anchored state -> reviewed capability adapter -> sealed plan
 
 An unknown manager remains observable through the PoX-5 baseline. Sidekick enables an action only
 when a code-backed adapter proves the exact behavior needed to construct and verify it. Observe
-never signs. Operator-run signs only permissionless reward calls from one operator-approved recipe
+never signs. Operator-run signs only permissionless reward calls from one approved recipe
 with a dedicated, low-balance gas wallet. See the [engine contract](transaction-engine.md).

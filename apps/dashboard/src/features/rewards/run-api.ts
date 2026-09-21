@@ -14,30 +14,11 @@ import { ApiRequestError, apiJson, type ResponseSchema } from "../../api-client.
  * rest without a browser.
  */
 
-export const rewardRunKinds = [
-  "collect-and-distribute",
-  "distribute",
-  "collect",
-  "calculate",
-  "finish-bitcoin-payouts",
-] as const;
-export type RewardRunKind = (typeof rewardRunKinds)[number];
-
-/** The primary-button vocabulary maps onto the recipe operations the server may include. */
-export function operationsForKind(kind: RewardRunKind): RewardRunOperation[] {
-  switch (kind) {
-    case "collect-and-distribute":
-      return ["claim-rewards", "claim-staker-rewards"];
-    case "distribute":
-      return ["claim-staker-rewards"];
-    case "collect":
-      return ["claim-rewards"];
-    case "calculate":
-      return ["calculate-rewards"];
-    case "finish-bitcoin-payouts":
-      return ["settle-accepted-withdrawal", "reclaim-failed-withdrawal"];
-  }
-}
+export {
+  operationsForKind,
+  type RewardRunKind,
+  rewardRunKinds,
+} from "@stx-labs/signer-sidekick-api-contracts";
 
 /** Runs that still own the gas wallet: unapproved drafts, approved, running, paused, halted. */
 export const ACTIVE_RUN_STATUSES: ReadonlySet<RewardRun["status"]> = new Set([

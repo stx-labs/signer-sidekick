@@ -860,6 +860,7 @@ function rewardRunRecord(
   readOnly: boolean,
   includeTimeline: boolean,
   chainId: number,
+  scheduled = false,
 ): ActivityRecord {
   const activityId = `reward-run:${run.runId}`;
   const state = rewardRunState(run);
@@ -896,7 +897,9 @@ function rewardRunRecord(
         eventId: `${activityId}:approved`,
         code: "recipe-approved",
         title: "Reward run approved",
-        detail: "The operator approved this sealed reward recipe.",
+        detail: scheduled
+          ? "This run was prepared by the automatic schedule and approved through the reward-run service."
+          : "The operator approved this sealed reward recipe.",
         occurredAt: run.approvedAt,
         source: "transaction-engine",
         txid: null,
@@ -1489,6 +1492,7 @@ export class ActivityProjectionService {
       readOnly,
       includeTimeline,
       this.options.chainId,
+      this.options.store.rewardSchedule.isScheduled(run.runId),
     );
     this.mergeDetailChainEvents(record, includeTimeline, reads);
     return record;

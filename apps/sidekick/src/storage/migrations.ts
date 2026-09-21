@@ -2486,4 +2486,18 @@ export const migrations: readonly Migration[] = [
         WHERE canonical = 1 AND json_extract(decoded_payload_json, '$.transactionStatus') = 'success';
     `,
   },
+  {
+    version: 44,
+    name: "scheduled_reward_runs",
+    sql: `
+      CREATE TABLE reward_schedule (
+        singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+        state_json TEXT NOT NULL CHECK (json_valid(state_json))
+      ) STRICT;
+      CREATE TABLE reward_schedule_requests (
+        request_id TEXT PRIMARY KEY,
+        created_at TEXT NOT NULL
+      ) STRICT;
+    `,
+  },
 ];

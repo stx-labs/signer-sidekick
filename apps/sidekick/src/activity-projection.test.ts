@@ -722,6 +722,27 @@ describe("Activity projection", () => {
     expect(service.page(query({ domain: "pool", time: "24h" })).items).toEqual([]);
   });
 
+  it("attributes scheduled initiation without claiming a human approved the recipe", async () => {
+    const store = await memoryStore();
+    const run = insertCompletedRewardRun(store);
+    const service = new ActivityProjectionService({
+      store,
+      chainId: 1,
+      managerPrincipal,
+      pox5ContractId: () => pox5ContractId,
+      sourceId: () => sourceId,
+      now: () => now,
+    });
+    const approval = () =>
+      service
+        .detail(`reward-run:${run.runId}`)
+        ?.timeline.find((entry) => entry.code === "recipe-approved");
+    expect(approval()?.detail).toContain("operator approved");
+    store.rewardSchedule.track(run.runId, now.toISOString());
+    expect(approval()?.detail).toContain("prepared by the automatic schedule");
+    expect(approval()?.detail).not.toContain("operator approved");
+  });
+
   it("groups transaction events and excludes an off-page owner before key pagination", async () => {
     const store = await memoryStore();
     const run = insertCompletedRewardRun(store);

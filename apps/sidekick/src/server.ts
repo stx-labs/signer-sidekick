@@ -41,6 +41,7 @@ import {
   reconciliationSummarySchema,
   rewardRunApproveRequestSchema,
   rewardRunPrepareRequestSchema,
+  rewardScheduleSettingsSchema,
   signerGrantVerifyRequestSchema,
   type WalletIntentAnchorMismatchError,
   type WalletIntentAnchorUnstableError,
@@ -78,6 +79,7 @@ import {
   withOperatorRequestSignal,
 } from "./request-context.js";
 import { prepareRewardLedgerExport } from "./reward-ledger-export.js";
+import { RewardScheduleError, type RewardScheduleService } from "./reward-schedule.js";
 import {
   RosterReconciliationMetricsTracker,
   RosterReconciliationRetryError,
@@ -397,6 +399,7 @@ export interface ServerOptions {
   engine?: TransactionEngineApiService;
   gasWallet?: GasWalletApi;
   rewardRuns?: RewardRunApi;
+  rewardSchedule?: Pick<RewardScheduleService, "status" | "configure">;
   supportApplication?(): OperatorSupportApplication;
   databaseStatus?(): unknown;
   observerStatus?(): ObserverRuntimeStatus;
@@ -1479,6 +1482,8 @@ export function createServer(options: ServerOptions = {}) {
       pathname === "/api/v1/deployment-requirements" ||
       pathname === "/api/v1/deployment-requirements/refresh" ||
       pathname === "/api/v1/support-bundle" ||
+      // Retained status and disabling must work during an outage. Enabling is gated in the handler.
+      pathname === "/api/v1/rewards/schedule" ||
       (pathname === "/api/v1/health" && (request.method === "GET" || request.method === "HEAD")) ||
       ((pathname === "/api/v1/activity" || pathname.startsWith("/api/v1/activity/")) &&
         (request.method === "GET" || request.method === "HEAD")) ||
@@ -2578,6 +2583,29 @@ export function createServer(options: ServerOptions = {}) {
     const params = z.object({ sweepId: z.string().uuid() }).safeParse(request.params);
     if (!params.success) throw new OperatorApiError(400, "invalid_gas_wallet_request");
     return await gasWalletCall(() => gasWallet.cancelSweep(params.data.sweepId));
+  });
+  server.get("/api/v1/rewards/schedule", async (_request, reply) => {
+    reply.header("cache-control", "no-store");
+    return requireFeature(options.rewardSchedule, "reward_run_unavailable").status();
+  });
+  server.put("/api/v1/rewards/schedule", async (request, reply) => {
+    const schedule = requireFeature(options.rewardSchedule, "reward_run_unavailable");
+    const input = rewardScheduleSettingsSchema.safeParse(request.body);
+    if (!input.success) throw new OperatorApiError(400, "reward_run_invalid");
+    if (
+      input.data.enabled &&
+      (options.isOperational?.() === false ||
+        (options.connection && options.connection.current()?.status !== "connected"))
+    )
+      throw new OperatorApiError(503, "connection_required", true);
+    reply.header("cache-control", "no-store");
+    try {
+      return schedule.configure(input.data);
+    } catch (error) {
+      if (error instanceof RewardScheduleError)
+        return reply.code(409).send({ error: "reward_schedule_conflict", message: error.message });
+      throw error;
+    }
   });
   server.get("/api/v1/rewards/runs", async (request, reply) => {
     const runs = requireFeature(options.rewardRuns, "reward_run_unavailable");

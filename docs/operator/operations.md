@@ -5,7 +5,7 @@ Sidekick, not the Stacks node or signer.
 
 ## Upgrade
 
-1. Review the target release notes. Finish or pause reward work at a transaction boundary and record
+1. Review the target release notes. Disable automatic reward starts if enabled. Finish or pause reward work at a transaction boundary and record
    unresolved transaction IDs. Do not approve new work during the upgrade.
 2. Back up with the **current image and configuration**, before selecting the new version:
 
@@ -49,7 +49,8 @@ curl --fail http://127.0.0.1:3998/health/operational
 
 Migration 40 records run/sweep execution sources and preserves legacy halted-run diagnostics.
 Schema 41 adds ten Activity/observer indexes; schema 42 indexes settings revisions. Schema 43 adds
-snapshot retention metadata and history-read indexes. These migrations do not delete or rewrite
+snapshot retention metadata and history-read indexes. Schema 44 adds the reward schedule and its
+initiation provenance, off by default. These migrations do not delete or rewrite
 financial rows. File-backed upgrades take an automatic pre-migration backup. Older binaries refuse
 newer schemas; rollback needs the
 compatible database, not just the old image. Never restore over newer submissions without reconciling
@@ -93,7 +94,8 @@ docker compose up -d --no-deps sidekick
 )
 ```
 
-Check identity, history and every unresolved transaction before re-enabling operator-run. Preserve
+Disable any restored reward schedule, then check identity, history and every unresolved transaction
+before re-enabling operator-run. Preserve
 the quarantined data until reconciliation is complete. Never run two services against one store
 or enable signing on a copied production database.
 
@@ -172,6 +174,21 @@ signs a replacement. Preserve the database and gas-wallet key across restart.
 Typed transient read failures wait within the original deadline. Positive conflicts, hard refusals
 and ambiguous submission halt. **Settings → Reward runs → Force Observe** or gas-wallet Disable
 stop signing, not observation. Future work still requires fresh anchored node checks and approval.
+
+### Automatic reward runs
+
+In **Settings → Reward runs**, enable **Automatic reward runs** and set the check interval
+(default 15 minutes). This approves the same calculate, collect, distribute and Finish Bitcoin
+payouts recipes as the manual buttons, including future eligible stakers and subsequent chunks.
+Current gas-wallet fee limits apply; there is no aggregate monthly budget. Admin actions, fee
+withdrawals and sweeps remain manual.
+
+The browser can be closed. Settings shows the last result, next check and run link; Activity marks
+scheduled initiation. A normal restart retains the schedule. A deployment identity change or
+stopped run requires review and re-enablement, never automatic Resume or replacement.
+
+**Disable schedule** prevents new approvals, but approval already in progress and approved runs may
+continue. Use **Force Observe** to stop new signatures; neither control undoes a broadcast.
 
 ## Transaction observation
 

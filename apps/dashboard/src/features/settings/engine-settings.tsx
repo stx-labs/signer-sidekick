@@ -17,6 +17,7 @@ import {
   loadOperationReadiness,
 } from "../operations/engine-api.js";
 import { GasWalletSettings } from "./gas-wallet-settings.js";
+import { RewardScheduleSettings } from "./reward-schedule-settings.js";
 import { SettingsRow, SettingsSectionTitle } from "./settings-ui.js";
 
 type EngineControlAction = "force-observe" | `disable:${string}`;
@@ -356,7 +357,7 @@ export function EngineSettings({
               ) : null
             }
             detail={modeDetail}
-            help="Set by the deployment. Observe never signs; operator-run signs only a sealed recipe you approve with the gas wallet."
+            help="Set by the deployment. Observe never signs; operator-run uses sealed recipes approved manually or by the automatic schedule you enable."
             name="Engine mode"
             statusNode={
               <Badge
@@ -380,6 +381,7 @@ export function EngineSettings({
           token={token}
           readOnly={readOnly}
         />
+        <RewardScheduleSettings token={token} readOnly={readOnly} />
         <div className="st-rows">
           {feeBand && onFeeBandChange && onFeeBandSave ? (
             <FeeBandRow

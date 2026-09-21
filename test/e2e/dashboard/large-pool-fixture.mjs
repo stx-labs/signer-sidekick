@@ -1751,6 +1751,18 @@ export function responseFor(url) {
   if (request.pathname === "/api/v1/settings/gas-wallet") return gasWalletStatus;
   if (request.pathname.startsWith("/api/v1/settings/gas-wallet/")) return gasWalletStatus;
   if (request.pathname === "/api/v1/rewards/runs") return [];
+  if (request.pathname === "/api/v1/rewards/schedule")
+    return {
+      enabled: false,
+      intervalMinutes: 15,
+      revision: 0,
+      state: "off",
+      detail: "Automatic reward runs are off.",
+      nextCheckAt: null,
+      lastCheckAt: null,
+      runId: null,
+      preparationId: null,
+    };
   if (request.pathname.startsWith("/api/v1/rewards/run-preparations/")) {
     return {
       fixtureStatus: 404,

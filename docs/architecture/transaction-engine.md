@@ -5,6 +5,8 @@ never accepts wallet credentials or signed bytes from the browser. It fetches tr
 independently when needed for verification. **Operator-run** is an explicit
 deployment mode for the permissionless PoX-5 reward calls. It uses only the dedicated gas wallet
 and the recipe-run API defined by [ADR 0010](decisions/0010-operator-run-execution-envelope.md).
+Recipes are approved manually or by the separately enabled
+[scheduler](decisions/0011-scheduled-reward-runs.md); execution is identical.
 
 ## Authority
 

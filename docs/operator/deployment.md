@@ -179,9 +179,9 @@ default `observe` engine mode.
 ## Gas wallet and reward runs
 
 Sidekick can run the permissionless PoX-5 reward calls — calculate, collect, distribute, settle,
-reclaim — from one operator-approved recipe at a time. Those calls need a key that pays network
+reclaim — from one approved recipe at a time. Those calls need a key that pays network
 fees, and Sidekick must never hold the signer or manager-admin key, so it generates a dedicated
-**gas wallet**: a low-balance STX account that signs only the sealed recipe you approve. The
+**gas wallet**: a low-balance STX account that signs only approved sealed recipes. The
 contract fixes every payout recipient and amount; the wallet's whole exposure is its balance. Keys
 are never accepted through the environment, and Observe remains the default.
 
@@ -197,6 +197,8 @@ are never accepted through the environment, and Observe remains the default.
    can require later settlement/reclaim calls.
 4. **Enable**. Before every signature Sidekick re-checks that the address is not the signer, a
    manager admin, or a contract, and refuses otherwise.
+
+Reward runs are manual unless you enable [automatic reward runs](operations.md#automatic-reward-runs).
 
 Back up `gas-wallet.key` with the database (see Operations); losing it loses only the gas balance.
 **Sweep remaining STX** returns the balance to an address you name. **Disable**, **Force Observe**

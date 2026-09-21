@@ -52,5 +52,6 @@ Ledger fixtures cover 150 stakers across 50 cycles. Activity uses storage-level 
 reward runs use the node's fee estimate within a configured band. Measure remaining cycle-window,
 payment-query and CSV costs before adding another projection or changing the ledger/recipe model.
 
-Unattended execution, pipelined nonces, public staker UI, signer/admin key custody, and selective
+Unattended execution is a separate [Autopilot proposal](autopilot-plan.md), not authority granted
+by this delivery. Pipelined nonces, public staker UI, signer/admin key custody, and selective
 recipient runs remain out of scope.
