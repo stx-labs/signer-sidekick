@@ -18,10 +18,13 @@ When a pull request touches any of the following, review it against this list be
   proof — there must be no generic signing or contract-call path;
 - one-in-flight nonce handling, external completion, ambiguous broadcast, restart, and resume;
 - CSRF/auth boundaries and exclusion of keys or signed bytes from APIs, logs, Activity, and support
-  exports; and
+  exports;
 - scheduled approval: explicit opt-in bound to deployment identity, no adoption of manual
-  preparations, exact recipe hash, restart/disable races, durable stop on halted/expired work,
-  unresolved-attempt protection, and truthful Activity attribution;
+  preparations, exact recipe hash, restart/disable races, durable stop on paused/halted/expired/cancelled
+  scheduled work, and unresolved attempts from expired/cancelled manual runs after lease release;
+- truthful scheduled Activity attribution and consent covering future members/chunks, with no claim
+  that per-run fee limits provide an aggregate budget; Disable must not promise to stop an approval
+  already begun or undo a broadcast;
 - regtest/Devnet coverage for calculate, collect, distribute, settle, reclaim, pause, and recovery.
 
 Paths that usually carry these changes: `apps/sidekick/src/transaction-engine/**`,

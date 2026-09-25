@@ -11,8 +11,8 @@ selection and calls the existing asynchronous preparation and exact-recipe appro
 [ADR 0010](0010-operator-run-execution-envelope.md)'s engine, authorization format, adapters, signing,
 postconditions, exclusion, expiry and recovery remain unchanged.
 
-Enabling binds consent to the network, manager and gas wallet, including future eligible stakers
-and subsequent distribution chunks. Existing fee settings apply; per-run caps are **not** an
+Enabling binds consent to the network/chain ID, manager and gas wallet, including future eligible
+stakers and subsequent distribution chunks. Existing fee settings apply; per-run caps are **not** an
 aggregate spending budget. Admin changes, fee withdrawals and gas-wallet sweeps remain manual.
 
 The schedule is off by default. SQLite stores settings, its own request/run linkage and initiation
@@ -25,16 +25,31 @@ Before approval, the scheduler rechecks enablement and deployment identity. Disa
 unapproved recipe once preparation finishes; approval already begun and approved execution may
 continue. Force Observe retains its existing signature-boundary effect.
 
-A halted, paused, expired or cancelled run latches scheduling off with its reason. The scheduler
-never resumes it or starts a replacement. Re-enablement requires explicit review and cannot discard
+A halted, paused, expired or cancelled scheduled run latches scheduling off with its reason. The
+scheduler never resumes it or starts a replacement. Re-enablement requires explicit review and cannot discard
 a materialized/broadcast attempt or an unresolved halted/paused run. A changed deployment cannot
 inherit a pending recipe's consent.
-An expired manual run with unresolved child evidence also blocks automatic starts, even if its
-engine lease has been released; resolving that evidence is not a scheduler responsibility.
+An expired or cancelled manual run with unresolved signed-attempt evidence also blocks automatic
+starts, even if its engine lease has been released. Missing evidence fails closed; only terminal
+attempt evidence clears this guard. The scheduler does not change engine reconciliation.
+
+## Interfaces and persistence
+
+`GET /api/v1/rewards/schedule` returns status without live chain reads. `PUT` uses the existing
+operator authentication and CSRF guard; its body is `{ enabled, intervalMinutes, revision }`.
+The revision must match the current status. The strict contract lives in
+`packages/api-contracts/src/reward-schedule.ts`, not deployment environment variables.
+
+Schema 44 adds `reward_schedule` (singleton settings, identity and progress) and
+`reward_schedule_requests` (initiation provenance). Existing run/child/attempt tables remain the
+execution record. The scheduler starts with operational workers and drains before the engine on
+shutdown; it never creates another signer or transaction queue.
 
 ## Review and rollout
 
 This adds automatic approval authority, not a second execution path. Review against the
 [signing-path checklist](../../../security/operator-run-mainnet-review.md), including lifecycle,
-consent and manual-run coexistence tests. Complete the Devnet workflow before an explicitly approved
-mainnet canary. Backup/copy procedures retain Observe until reconciliation and schedule review.
+consent and manual-run coexistence tests. Record executed scenarios, remaining gaps and explicit
+mainnet approval in the shipping PR; CI success alone is not live workflow validation.
+[Operations](../../operator/operations.md#automatic-reward-runs) owns enable/disable and recovery
+procedures. Rollout evidence and remaining acceptance work are tracked in #6, not a second plan.

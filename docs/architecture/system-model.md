@@ -13,6 +13,8 @@ of truth.
 | Observer listener | Durably queues retained callbacks on a private endpoint; acknowledges and discards overflow for polling recovery. |
 | Reconciliation workers | Verify callback claims, refresh affected domains, backfill current-member history, and run periodic anti-entropy. |
 | Health monitor | Samples the local node and signer, compares optional independent references, and records durable finding episodes. |
+| Reward scheduler | When enabled, selects eligible work and prepares/approves an exact recipe through the existing run service. |
+| Transaction engine | Executes approved recipes with the dedicated gas wallet, one transaction in flight, and durable recovery. |
 | SQLite store | Keeps raw evidence, canonical anchors, projections, operation state, settings, and audit history behind typed repositories. |
 | Dashboard | Reads page-specific API contracts, hands sealed intents to a browser wallet, and approves bounded reward runs. |
 
@@ -62,4 +64,6 @@ anchored state -> reviewed capability adapter -> sealed plan
 An unknown manager remains observable through the PoX-5 baseline. Sidekick enables an action only
 when a code-backed adapter proves the exact behavior needed to construct and verify it. Observe
 never signs. Operator-run signs only permissionless reward calls from one approved recipe
-with a dedicated, low-balance gas wallet. See the [engine contract](transaction-engine.md).
+with a dedicated, low-balance gas wallet. Approval can be manual or
+[scheduled](decisions/0011-scheduled-reward-runs.md); both use the same
+[engine contract](transaction-engine.md).

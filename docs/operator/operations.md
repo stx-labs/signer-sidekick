@@ -5,8 +5,9 @@ Sidekick, not the Stacks node or signer.
 
 ## Upgrade
 
-1. Review the target release notes. Disable automatic reward starts if enabled. Finish or pause reward work at a transaction boundary and record
-   unresolved transaction IDs. Do not approve new work during the upgrade.
+1. Review the target release notes. Disable automatic reward starts if enabled. Finish or pause
+   reward work at a transaction boundary and record unresolved transaction IDs. Do not approve new
+   work during the upgrade.
 2. Back up with the **current image and configuration**, before selecting the new version:
 
 ```sh
@@ -46,15 +47,12 @@ curl --fail http://127.0.0.1:3998/health/operational
 
 4. Retry the operational probe while startup is pending, then check build identity, history,
    submitted work and background freshness. Do not mistake container health for indexing completion.
+   Re-enable automatic reward runs only after these checks pass.
 
-Migration 40 records run/sweep execution sources and preserves legacy halted-run diagnostics.
-Schema 41 adds ten Activity/observer indexes; schema 42 indexes settings revisions. Schema 43 adds
-snapshot retention metadata and history-read indexes. Schema 44 adds the reward schedule and its
-initiation provenance, off by default. These migrations do not delete or rewrite
-financial rows. File-backed upgrades take an automatic pre-migration backup. Older binaries refuse
-newer schemas; rollback needs the
-compatible database, not just the old image. Never restore over newer submissions without reconciling
-them first.
+Schema 44 adds the reward schedule and initiation provenance without rewriting financial rows;
+upgrading does not enable it. File-backed upgrades take an automatic pre-migration backup. Older
+binaries refuse newer schemas: rollback needs the compatible database, not just the old image.
+Never restore over newer submissions without reconciling them first.
 
 ## Restore
 
@@ -177,18 +175,35 @@ stop signing, not observation. Future work still requires fresh anchored node ch
 
 ### Automatic reward runs
 
-In **Settings → Reward runs**, enable **Automatic reward runs** and set the check interval
-(default 15 minutes). This approves the same calculate, collect, distribute and Finish Bitcoin
+After [enabling the gas wallet](deployment.md#gas-wallet-and-reward-runs), open **Settings → Reward
+runs → Automatic reward runs**, set **Check interval**, and choose **Enable automatic runs**.
+It is off by default. Enabling authorizes the same calculate, collect, distribute and Finish Bitcoin
 payouts recipes as the manual buttons, including future eligible stakers and subsequent chunks.
-Current gas-wallet fee limits apply; there is no aggregate monthly budget. Admin actions, fee
-withdrawals and sweeps remain manual.
+Manager/admin actions, withdrawals of your fees, gas-wallet funding and sweeps remain manual.
 
-The browser can be closed. Settings shows the last result, next check and run link; Activity marks
-scheduled initiation. A normal restart retains the schedule. A deployment identity change or
-stopped run requires review and re-enablement, never automatic Resume or replacement.
+The interval is an idle-work check (15 minutes by default; 1–1,440 allowed), not a transaction rate
+or spending cap. Enabling checks immediately; a completed run can trigger the next action without
+waiting for the interval. Current gas-wallet fee limits apply to each recipe, with **no aggregate
+spending budget**. Fund only the STX you are willing to spend on fees.
 
-**Disable schedule** prevents new approvals, but approval already in progress and approved runs may
-continue. Use **Force Observe** to stop new signatures; neither control undoes a broadcast.
+No browser is needed. A normal restart retains the schedule and follows the same preparation/run;
+manual preparations are never automatically approved. Settings shows the last check, reason, next
+check and active run link. Rewards links to that status; Activity records scheduled initiation.
+
+| Status | What to do |
+| --- | --- |
+| Waiting | Read the reason: no eligible work, unavailable prerequisites, or another run/sweep. Checks continue. A waiting calculation or Bitcoin confirmation is not yet eligible work. |
+| Preparing / running | Follow the run's progress and transaction evidence in Activity. |
+| Needs attention | Scheduling is off. Review the linked preparation/run or changed deployment identity, resolve it, then explicitly re-enable. |
+
+A paused, halted, expired or cancelled **scheduled** run stops further scheduling. It is never
+automatically resumed or replaced. Unresolved signed attempts from expired/cancelled **manual**
+runs also block new scheduled work even after their wallet lease is released; cancelling does not
+clear transaction uncertainty.
+
+**Disable schedule** stops new approvals, but approval already begun and approved runs may continue.
+It does not pause the engine. **Force Observe** or gas-wallet **Disable** stops new signatures;
+neither undoes a broadcast. Schedule status and Disable remain available during a node outage.
 
 ## Transaction observation
 

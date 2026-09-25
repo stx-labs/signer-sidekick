@@ -83,6 +83,8 @@ Operators may change the theme; Stacks API, node RPC, node metrics, signer-monit
 reference endpoints; API credentials; and forecast horizon. Candidate endpoint changes must pass
 preflight before becoming active. Engine mode and safety caps are deployment settings. Gas-wallet
 generation, enablement, disablement, and sweep are explicit Settings actions.
+The [reward schedule](decisions/0011-scheduled-reward-runs.md) is a separate, default-off Settings
+control, persisted in SQLite rather than environment configuration.
 
 Each API has its own write-only credential. Environment variables supply deployment defaults; a
 key entered in Settings overrides only that source. Removing the saved override returns to the

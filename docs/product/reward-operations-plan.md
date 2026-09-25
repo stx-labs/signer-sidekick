@@ -52,6 +52,7 @@ Ledger fixtures cover 150 stakers across 50 cycles. Activity uses storage-level 
 reward runs use the node's fee estimate within a configured band. Measure remaining cycle-window,
 payment-query and CSV costs before adding another projection or changing the ledger/recipe model.
 
-Unattended execution is a separate [Autopilot proposal](autopilot-plan.md), not authority granted
-by this delivery. Pipelined nonces, public staker UI, signer/admin key custody, and selective
-recipient runs remain out of scope.
+Opt-in scheduled approval is defined separately in
+[ADR 0011](../architecture/decisions/0011-scheduled-reward-runs.md), with rollout tracked in
+[#6](https://github.com/stx-labs/signer-sidekick/issues/6). Pipelined nonces, public staker UI,
+signer/admin key custody, and selective recipient runs remain out of scope.

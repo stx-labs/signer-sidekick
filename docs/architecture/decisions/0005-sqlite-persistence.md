@@ -7,9 +7,9 @@
 
 Use Node's built-in `node:sqlite` behind typed repositories composed by `SidekickStore`. Database
 handles and SQL do not cross the storage-module boundary. Transaction-engine, wallet-intent,
-health, observer-inbox, deployment-identity, runtime-settings, manager-trust, and chain-cursor
-queries have separate repository boundaries; `SidekickStore` owns the shared connection and
-lifecycle.
+health, observer-inbox, deployment-identity, runtime-settings, reward-schedule, manager-trust, and
+chain-cursor queries have separate repository boundaries; `SidekickStore` owns the shared connection
+and lifecycle.
 
 File databases use WAL with `synchronous=FULL`, foreign keys, a busy timeout, checksummed
 forward-only migrations, and an automatic pre-migration backup. The store separates raw chain
