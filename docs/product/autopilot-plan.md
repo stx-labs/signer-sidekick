@@ -23,8 +23,11 @@ operator controls are in [Operations](../operator/operations.md#automatic-reward
 - [x] Browser and contract regression verification: 257 browser tests passed (4 skipped),
   13 regtest contract tests passed; check/build and all unit suites passed.
 - [ ] Live Devnet: calculate, collect, payout chunks, later Bitcoin acceptance/rejection and
-  finalization with the browser closed. Docker is unavailable in this development session.
-- [ ] Second-person review of the automatic-approval boundary.
+  finalization with the browser closed. Fixtures must account for the 30-minute roster refresh
+  and calculation grace (ten minutes and 24 canonical Stacks blocks); accelerated cycles alone
+  do not validate this path.
+- [x] Independent code review of the automatic-approval boundary; cancelled-run unresolved-attempt
+  guard corrected and regression-tested. Required human PR approval remains outstanding.
 - [ ] Explicitly approved mainnet canary, then deployment validation.
 
 Do not expand this work into new engine retry/replacement behavior, an authorization issuer,

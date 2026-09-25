@@ -435,9 +435,9 @@ export async function executeCliCommand({
           if (engine.requestedMode !== "operator-run") return "Operator-run mode is required.";
           const wallet = store.gasWallet.get();
           if (!wallet?.enabled) return "Enable the gas wallet before scheduling reward runs.";
-          const unresolved = store.rewardSchedule.unresolvedExpiredRun(wallet.principal);
+          const unresolved = store.rewardSchedule.unresolvedStoppedRun(wallet.principal);
           if (unresolved)
-            return `Expired run ${unresolved} has unresolved transaction evidence. Review it before scheduling more work.`;
+            return `Stopped run ${unresolved} has unresolved transaction evidence. Review it before scheduling more work.`;
           const forced = store.transactionEngine.getForceObserveControl();
           return forced ? `Force Observe is active: ${forced.reason}` : null;
         },

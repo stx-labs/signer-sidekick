@@ -63,13 +63,21 @@ export class RewardScheduleRepository {
     );
   }
 
-  /** An expired manual run can release its lease while an attempt is still unresolved. */
-  unresolvedExpiredRun(walletPrincipal: string): string | null {
+  /** Cancellation/expiry releases the lease, not a signed attempt's possible chain effects. */
+  unresolvedStoppedRun(walletPrincipal: string): string | null {
+    // Only terminal attempt evidence clears an unfinished child. Missing evidence fails closed.
     const row = this.db
       .prepare(`SELECT run_id FROM transaction_runs r
-      WHERE wallet_principal = ? AND status = 'expired' AND EXISTS (
+      WHERE wallet_principal = ? AND status IN ('expired', 'cancelled') AND EXISTS (
         SELECT 1 FROM transaction_run_children c WHERE c.run_id = r.run_id
           AND c.status IN ('materialized', 'broadcast', 'halted')
+          AND (
+            NOT EXISTS (SELECT 1 FROM transaction_run_attempts a
+              WHERE a.run_id = c.run_id AND a.child_index = c.child_index)
+            OR EXISTS (SELECT 1 FROM transaction_run_attempts a
+              WHERE a.run_id = c.run_id AND a.child_index = c.child_index
+                AND a.state NOT IN ('confirmed', 'rejected'))
+          )
       ) LIMIT 1`)
       .get(walletPrincipal) as { run_id: string } | undefined;
     return row?.run_id ?? null;
