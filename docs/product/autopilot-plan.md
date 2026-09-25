@@ -22,10 +22,12 @@ operator controls are in [Operations](../operator/operations.md#automatic-reward
 - [x] Short ADR, operator instructions and signing-path review checklist.
 - [x] Browser and contract regression verification: 257 browser tests passed (4 skipped),
   13 regtest contract tests passed; check/build and all unit suites passed.
-- [ ] Live Devnet: calculate, collect, payout chunks, later Bitcoin acceptance/rejection and
-  finalization with the browser closed. Fixtures must account for the 30-minute roster refresh
-  and calculation grace (ten minutes and 24 canonical Stacks blocks); accelerated cycles alone
-  do not validate this path.
+- [x] Live Devnet with seeded network calculation: automatic collect, three payouts, and later
+  Bitcoin acceptance/rejection finalization; all runs completed without browser approvals.
+  Ledger registry discovery corrected; regression tests cover custom networks and missing preflight.
+- [ ] Live Devnet automatic calculation and payout chunking. Calculation fixtures must account
+  for the 30-minute roster refresh and grace (ten minutes and 24 canonical Stacks blocks);
+  accelerated cycles alone do not validate this path.
 - [x] Independent code review of the automatic-approval boundary; cancelled-run unresolved-attempt
   guard corrected and regression-tested. Required human PR approval remains outstanding.
 - [ ] Explicitly approved mainnet canary, then deployment validation.

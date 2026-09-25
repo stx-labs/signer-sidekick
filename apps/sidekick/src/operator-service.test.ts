@@ -23,7 +23,10 @@ import { openSidekickStore, type SidekickStore } from "./storage/store.js";
 const stores: SidekickStore[] = [];
 
 describe("reward ledger shared reads", () => {
-  async function fixture() {
+  async function fixture(
+    network: SidekickConfig["network"] = "mainnet",
+    registry: string | null = "SP000000000000000000002Q6VF78.sbtc-registry",
+  ) {
     const { store } = await openSidekickStore(":memory:");
     stores.push(store);
     const timing = {
@@ -34,7 +37,7 @@ describe("reward ledger shared reads", () => {
     };
     const service = new OperatorService({
       config: {
-        network: "mainnet",
+        network,
         nodeRpcUrl: "http://unused.invalid",
         apiUrl: "http://unused.invalid",
       } as SidekickConfig,
@@ -46,21 +49,48 @@ describe("reward ledger shared reads", () => {
     });
     const snapshot = {
       generatedAt: "2026-09-08T12:00:00.000Z",
-      network: "mainnet",
+      network,
       managerPrincipal: "SP000000000000000000002Q6VF78.signer-manager",
       chainAnchor: null,
       roster: [],
       rewards: null,
       rewardsPrevious: null,
       rewardOutlook: null,
-      preflight: { pox: { pox5ContractId: null } },
+      preflight: { pox: { pox5ContractId: null, sbtcRegistryContract: registry } },
       historyRecovery: null,
       manager: { capabilities: { eventVocabulary: { normalizationAvailable: true } } },
     } as unknown as Awaited<ReturnType<OperatorService["snapshot"]>>;
     vi.spyOn(service, "snapshot").mockResolvedValue(snapshot);
     const builds = vi.spyOn(service, "withdrawalRequestEvidence").mockResolvedValue(new Map());
-    return { service, builds, timing, store };
+    return { service, builds, timing, store, snapshot };
   }
+
+  it.each([
+    "mainnet",
+    "testnet",
+    "devnet",
+  ] as const)("uses the registry discovered by preflight on %s, not a built-in profile", async (network) => {
+    const registry =
+      network === "mainnet"
+        ? "SP000000000000000000002Q6VF78.custom-sbtc-registry"
+        : "ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM.sbtc-registry";
+    const { service, builds } = await fixture(network, registry);
+    await service.rewardLedger();
+    expect(builds).toHaveBeenCalledExactlyOnceWith(registry, [], undefined);
+  });
+
+  it("does not guess a registry when preflight has not identified one", async () => {
+    const { service, builds } = await fixture("mainnet", null);
+    await service.rewardLedger();
+    expect(builds).not.toHaveBeenCalled();
+  });
+
+  it("keeps the ledger readable when preflight is unavailable", async () => {
+    const { service, builds, snapshot } = await fixture();
+    snapshot.preflight = null;
+    await expect(service.rewardLedger()).resolves.toBeDefined();
+    expect(builds).not.toHaveBeenCalled();
+  });
 
   it("coalesces simultaneous same-key reads and includes retained page context", async () => {
     const { service, builds, timing } = await fixture();

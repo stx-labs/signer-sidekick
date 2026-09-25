@@ -7,7 +7,6 @@ import type {
   RewardRun,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import { encodeUIntHex } from "@stx-labs/signer-sidekick-protocol/clarity-codecs";
-import { BUILT_IN_NETWORK_COMPATIBILITY_PROFILES } from "@stx-labs/signer-sidekick-protocol/known-network-compatibility";
 import { BackgroundContractReads } from "./background-contract-reads.js";
 import { type ChainAnchor, deriveRewardCalculationTarget } from "./chain-anchor.js";
 import {
@@ -1150,9 +1149,8 @@ export class OperatorService {
     if (cached) return cached;
     const existing = this.rewardLedgerReads.get(cacheKey);
     if (existing) return existing;
-    const registry =
-      BUILT_IN_NETWORK_COMPATIBILITY_PROFILES.find((profile) => profile.network === config.network)
-        ?.sbtc.registryContract ?? null;
+    // Follow preflight's registry discovery, including Devnet and installed network profiles.
+    const registry = snapshot.preflight?.pox?.sbtcRegistryContract ?? null;
     const tip = snapshot.chainAnchor?.indexBlockHash;
     const snapshotInput: RewardLedgerSnapshotInput = {
       generatedAt: snapshot.generatedAt,
