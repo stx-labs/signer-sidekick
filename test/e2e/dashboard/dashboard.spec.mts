@@ -97,6 +97,84 @@ async function editConnection(page: Page, label: string) {
   return row;
 }
 
+test("automatic reward schedule requires consent and stays disableable with an invalid draft interval", async ({
+  page,
+}) => {
+  let status = responseFor("http://fixture/api/v1/rewards/schedule");
+  const changes: unknown[] = [];
+  await page.route("**/api/v1/rewards/schedule", async (route) => {
+    if (route.request().method() === "PUT") {
+      const settings = route.request().postDataJSON();
+      changes.push(settings);
+      status = {
+        ...status,
+        ...settings,
+        revision: settings.revision + 1,
+        state: settings.enabled ? "scheduled" : "off",
+        detail: settings.enabled ? "Automatic reward checks enabled." : "Automatic starts are off.",
+      };
+    }
+    await route.fulfill(fixtureFulfillment(status));
+  });
+  await login(page);
+  await openSettingsSection(page, "capabilities", "Reward runs");
+  const enable = page.getByRole("button", { name: "Enable automatic runs" });
+  await expect(enable).toBeEnabled();
+  page.once("dialog", (dialog) => dialog.dismiss());
+  await enable.click();
+  expect(changes).toHaveLength(0);
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toContain("including newly eligible stakers");
+    expect(dialog.message()).toContain("not a monthly spending cap");
+    await dialog.accept();
+  });
+  await enable.click();
+  await expect(page.getByRole("button", { name: "Disable schedule" })).toBeEnabled();
+  expect(changes).toEqual([{ enabled: true, intervalMinutes: 15, revision: 0 }]);
+  await page.getByLabel("Reward check interval in minutes").fill("0");
+  await expect(page.getByRole("button", { name: "Save interval" })).toBeDisabled();
+  await page.getByRole("button", { name: "Disable schedule" }).click();
+  expect(changes.at(-1)).toEqual({ enabled: false, intervalMinutes: 15, revision: 1 });
+  await expect(enable).toBeDisabled(); // Invalid draft cannot be used to enable.
+  await page.getByLabel("Reward check interval in minutes").fill("30");
+  await page.getByRole("button", { name: "Save interval" }).click();
+  await expect(enable).toBeEnabled();
+  await page.evaluate(() => {
+    location.hash = "#rewards";
+  });
+  await expect(page.getByRole("link", { name: "Automatic rewards off" })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+    true,
+  );
+});
+
+test("automatic reward schedule surfaces a stopped run and links its evidence", async ({
+  page,
+}) => {
+  await page.route("**/api/v1/rewards/schedule", async (route) => {
+    await route.fulfill(
+      fixtureFulfillment({
+        ...responseFor("http://fixture/api/v1/rewards/schedule"),
+        state: "needs-attention",
+        detail: "Scheduled run halted: dedicated-key refusal.",
+        runId: "00000000-0000-4000-8000-000000000010",
+      }),
+    );
+  });
+  await login(page);
+  await page.evaluate(() => {
+    location.hash = "#rewards";
+  });
+  await expect(page.getByRole("link", { name: "Automatic rewards need attention" })).toBeVisible();
+  await page.getByRole("link", { name: "Automatic rewards need attention" }).click();
+  await expect(
+    page.getByRole("link", { name: "View run and transaction evidence" }),
+  ).toHaveAttribute("href", /reward-run/);
+  await expect(
+    page.getByText("Scheduled run halted: dedicated-key refusal.", { exact: false }),
+  ).toBeVisible();
+});
+
 test("shows focused recovery when the configured signer manager is not deployed", async ({
   page,
 }) => {
@@ -3854,7 +3932,7 @@ test("creates a gas wallet from Settings", async ({ page }) => {
   await section.getByRole("button", { name: "Create gas wallet" }).click();
   await expect(section.getByText("ST2J6ZY48GV1EZ5V2V5RB9MP66SW86PYKKNRV9EJ7")).toBeVisible();
   await expect(section.getByText(/12\.48 STX/).first()).toBeVisible();
-  await expect(section.getByRole("button", { name: "Enable" })).toBeVisible();
+  await expect(section.getByRole("button", { name: "Enable", exact: true })).toBeVisible();
   await section.getByRole("button", { name: "Sweep remaining STX" }).click();
   await expect(section.getByRole("button", { name: "Prepare sweep" })).toBeDisabled();
 });

@@ -18,6 +18,7 @@ import {
 } from "../chain-clients.js";
 import { requireConnectedAssessment } from "../connection-assessment.js";
 import { currentInteractiveRequestSignal } from "../request-context.js";
+import { RewardScheduleService } from "../reward-schedule.js";
 import { openSidekickStore, type SidekickStore } from "../storage/store.js";
 import type { SignedRewardOperationTransaction } from "./gas-payer-signer.js";
 import {
@@ -120,6 +121,7 @@ function driver(
   options: {
     reconcile?: "confirmed" | "pending" | "halt";
     broadcast?: "accepted" | "ambiguous" | "deterministic-rejection";
+    nonce?: () => bigint;
   } = {},
 ) {
   const materialized: string[] = [];
@@ -142,7 +144,7 @@ function driver(
         chainAnchor: run.recipe.preparedAnchor,
         sender: { principal: wallet, publicKey },
         managerSourceFingerprint: run.recipe.managerSourceFingerprint,
-        nonce: BigInt(child.index + 1),
+        nonce: options.nonce?.() ?? BigInt(child.index + 1),
         feeUstx: 500n,
       };
       const plan =
@@ -227,6 +229,99 @@ describe("reward run coordinator", () => {
     for (const store of stores.splice(0)) store.close();
     for (const directory of directories.splice(0))
       await rm(directory, { recursive: true, force: true });
+  });
+
+  it("executes scheduled collect and bounded payout chunks for both distributions through the unchanged engine", async () => {
+    const { store } = await openSidekickStore(":memory:", started.toISOString());
+    stores.push(store);
+    let nonce = 0n;
+    let distribution: 1 | 2 = 1;
+    let collected = false;
+    let remaining = facts().accounts;
+    let finished = false;
+    const live = driver({ nonce: () => ++nonce });
+    const service = new RewardRunService({
+      repository: store.rewardRuns,
+      signer: signer(),
+      driver: {
+        ...live.implementation,
+        async reconcile(input) {
+          if (input.child.operation === "claim-rewards") collected = true;
+          else {
+            remaining = remaining.filter(
+              (account) =>
+                `${account.stakerPrincipal}:${account.rewardCycle}:${account.bondIndex ?? "stx"}` !==
+                input.child.accountKey,
+            );
+            if (remaining.length === 0) {
+              if (distribution === 1) {
+                distribution = 2;
+                collected = false;
+                remaining = facts().accounts;
+              } else finished = true;
+            }
+          }
+          return { status: "confirmed", blockHeight: 9001 };
+        },
+      },
+      facts: async () => ({
+        ...facts(),
+        distribution,
+        collectRequired: !collected,
+        accounts: collected ? remaining : [],
+        eligibleAccountCount: collected ? remaining.length : 0,
+      }),
+      refusalChecks: async () => goodRefusal,
+      maximumTransactions: 1,
+      maximumFeeUstx: 1000n,
+      now: () => started,
+    });
+    const schedule = new RewardScheduleService({
+      repository: store.rewardSchedule,
+      runs: service,
+      identity: () => "testnet:manager:wallet",
+      unavailable: () => null,
+      walletBusy: () => false,
+      now: () => started,
+      select: async () => ({
+        beforeCycle: null,
+        request: finished
+          ? null
+          : {
+              cycle: 141,
+              distribution,
+              operations: [collected ? "claim-staker-rewards" : "claim-rewards"],
+            },
+      }),
+    });
+    try {
+      schedule.configure({ enabled: true, intervalMinutes: 15, revision: 0 });
+      await vi.waitFor(
+        async () => {
+          await schedule.tick();
+          await service.recover();
+          expect(schedule.status().state).not.toBe("needs-attention");
+          expect(finished).toBe(true);
+        },
+        { timeout: 5000, interval: 10 },
+      );
+      expect(live.broadcasts).toEqual([
+        "claim-rewards",
+        "claim-staker-rewards",
+        "claim-staker-rewards",
+        "claim-rewards",
+        "claim-staker-rewards",
+        "claim-staker-rewards",
+      ]);
+      expect(store.rewardRuns.list()).toHaveLength(6);
+      for (const run of store.rewardRuns.list()) {
+        expect(store.rewardSchedule.isScheduled(run.runId)).toBe(true);
+        expect(run.recipe.maxTransactions).toBe(1);
+      }
+    } finally {
+      await schedule.stop();
+      await service.stop();
+    }
   });
 
   it("does not hydrate 200 terminal runs with 50 children during idle maintenance", async () => {
@@ -1191,6 +1286,8 @@ describe("reward run coordinator", () => {
     // Recreate the previous schema and its parent-only unresolved diagnostic.
     const legacy = new DatabaseSync(path);
     legacy.exec(`
+      DROP TABLE reward_schedule_requests;
+      DROP TABLE reward_schedule;
       DROP INDEX position_detail_due;
       DROP INDEX pool_detail_due;
       DROP INDEX position_detail_neighbors;
@@ -1458,6 +1555,119 @@ describe("reward run coordinator", () => {
     });
     expect(service.get(prepared.runId).status).toBe("expired");
     expect(store.rewardRuns.active(wallet)).toBeNull();
+    // The scheduler must not turn the released lease into automatic replacement authority.
+    expect(store.rewardSchedule.unresolvedStoppedRun(wallet)).toBe(prepared.runId);
+    expect(store.rewardSchedule.unresolvedStoppedRun(stakerOne)).toBeNull();
+  });
+
+  it.each([
+    "broadcast-threw",
+    "signing-threw",
+  ] as const)("blocks automatic replacement after a manual cancellation with %s evidence", async (failure) => {
+    const { store } = await openSidekickStore(":memory:", started.toISOString());
+    stores.push(store);
+    let now = started;
+    const live = driver();
+    const sign = vi.fn(signer().signManagerClaimRewardsRunPlan);
+    if (failure === "signing-threw") sign.mockRejectedValue(new Error("signing interrupted"));
+    const service = new RewardRunService({
+      repository: store.rewardRuns,
+      signer: { ...signer(), signManagerClaimRewardsRunPlan: sign },
+      driver: {
+        ...live.implementation,
+        broadcast: async () => {
+          throw new Error("transport interrupted after signing");
+        },
+      },
+      facts: async () => facts(),
+      refusalChecks: async () => goodRefusal,
+      maximumFeeUstx: 1_000n,
+      now: () => now,
+    });
+    const select = vi.fn(async () => ({
+      request: { cycle: 141, distribution: 1 as const, operations: ["claim-rewards" as const] },
+      beforeCycle: null,
+    }));
+    const options = {
+      repository: store.rewardSchedule,
+      runs: service,
+      identity: () => wallet,
+      unavailable: () => store.rewardSchedule.unresolvedStoppedRun(wallet),
+      walletBusy: () => store.rewardRuns.active(wallet) !== null,
+      select,
+      now: () => now,
+    };
+    const schedule = new RewardScheduleService(options);
+    try {
+      schedule.configure({ enabled: true, intervalMinutes: 1, revision: 0 });
+      const prepared = await service.prepare({
+        cycle: 141,
+        distribution: 1,
+        operations: ["claim-rewards"],
+      });
+      await service.approve(prepared.runId, prepared.recipeSha256);
+      const halted = await settle(service, prepared.runId);
+      expect(halted).toMatchObject({ status: "halted", progress: { inFlight: 0 } });
+      expect(halted.children[0]).toMatchObject({ status: "materialized", txid: null });
+      expect(store.rewardRuns.attempts(prepared.runId, 0).map(({ state }) => state)).toEqual(
+        failure === "broadcast-threw" ? ["signed"] : [],
+      );
+      expect(service.cancel(prepared.runId).status).toBe("cancelled");
+      expect(store.rewardRuns.active(wallet)).toBeNull();
+      expect(store.rewardSchedule.unresolvedStoppedRun(wallet)).toBe(prepared.runId);
+      expect(store.rewardSchedule.unresolvedStoppedRun(stakerOne)).toBeNull();
+
+      await schedule.tick();
+      expect(schedule.status()).toMatchObject({ state: "waiting", detail: prepared.runId });
+      now = new Date(started.getTime() + 120_000);
+      const restarted = new RewardScheduleService(options);
+      await restarted.tick();
+      expect(() =>
+        restarted.configure({
+          enabled: true,
+          intervalMinutes: 1,
+          revision: restarted.status().revision,
+        }),
+      ).toThrow(prepared.runId);
+      expect(select).not.toHaveBeenCalled();
+      expect(store.rewardRuns.list()).toHaveLength(1);
+      expect(sign).toHaveBeenCalledOnce();
+      await restarted.stop();
+    } finally {
+      await schedule.stop();
+      await service.stop();
+    }
+  });
+
+  it("does not block scheduling on an unsigned cancellation or a proven deterministic rejection", async () => {
+    const { store } = await openSidekickStore(":memory:", started.toISOString());
+    stores.push(store);
+    const service = new RewardRunService({
+      repository: store.rewardRuns,
+      signer: signer(),
+      driver: driver({ broadcast: "deterministic-rejection" }).implementation,
+      facts: async () => facts(),
+      refusalChecks: async () => goodRefusal,
+      maximumFeeUstx: 1_000n,
+      now: () => started,
+    });
+    try {
+      const unsigned = await service.prepare({ cycle: 141, distribution: 1 });
+      service.cancel(unsigned.runId);
+      expect(store.rewardSchedule.unresolvedStoppedRun(wallet)).toBeNull();
+      const rejected = await service.prepare({
+        cycle: 141,
+        distribution: 1,
+        operations: ["claim-rewards"],
+      });
+      await service.approve(rejected.runId, rejected.recipeSha256);
+      expect((await settle(service, rejected.runId)).status).toBe("halted");
+      expect(store.rewardRuns.attempts(rejected.runId, 0)).toMatchObject([{ state: "rejected" }]);
+      service.cancel(rejected.runId);
+      expect(store.rewardSchedule.unresolvedStoppedRun(wallet)).toBeNull();
+    } finally {
+      await service.stop();
+    }
   });
 
   it("expires unused approvals and refuses a changed dedicated-wallet role", async () => {

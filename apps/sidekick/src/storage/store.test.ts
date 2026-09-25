@@ -311,7 +311,7 @@ describe("Sidekick SQLite store", () => {
     const store = await memoryStore();
 
     expect(store.databaseStatus()).toEqual({
-      schemaVersion: 43,
+      schemaVersion: 44,
       journalMode: "memory",
       synchronous: 1,
       foreignKeys: true,
@@ -370,15 +370,15 @@ describe("Sidekick SQLite store", () => {
     const directory = await mkdtemp(join(tmpdir(), "signer-sidekick-future-schema-"));
     temporaryDirectories.push(directory);
     const path = join(directory, "sidekick.sqlite");
-    createDatabaseThroughMigration(path, 43).close();
+    createDatabaseThroughMigration(path, 44).close();
     const future = new DatabaseSync(path);
-    future.exec("PRAGMA user_version = 44");
+    future.exec("PRAGMA user_version = 45");
     future.close();
     await expect(openSidekickStore(path, later)).rejects.toThrow(
-      "schema version 44 is newer than supported version 43",
+      "schema version 45 is newer than supported version 44",
     );
     const inspection = new DatabaseSync(path, { readOnly: true });
-    expect(inspection.prepare("PRAGMA user_version").get()).toEqual({ user_version: 44 });
+    expect(inspection.prepare("PRAGMA user_version").get()).toEqual({ user_version: 45 });
     inspection.close();
   });
 
@@ -1579,7 +1579,7 @@ describe("Sidekick SQLite store", () => {
     expect((await stat(path)).mode & 0o777).toBe(0o600);
     expect((await stat(result.backupPath as string)).mode & 0o777).toBe(0o600);
     expect(result.store.databaseStatus()).toMatchObject({
-      schemaVersion: 43,
+      schemaVersion: 44,
       journalMode: "wal",
       synchronous: 2,
     });
@@ -1603,7 +1603,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(43);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(44);
     expect(upgraded.store.runtimeSettings.get()?.settings).toMatchObject({
       displayName: "Preserved through forward migrations",
     });
@@ -1686,7 +1686,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.schemaVersion()).toBe(43);
+    expect(upgraded.store.schemaVersion()).toBe(44);
     const inspection = new DatabaseSync(path, { readOnly: true });
     expect(
       inspection
@@ -1761,7 +1761,7 @@ describe("Sidekick SQLite store", () => {
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
     expect(upgraded.backupPath).not.toBeNull();
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(43);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(44);
 
     const postUpgrade = new DatabaseSync(path);
     postUpgrade.exec(`
@@ -1890,7 +1890,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(43);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(44);
     expect(upgraded.store.managerTrust.listAudit(principal)).toMatchObject([
       {
         transition: "gained",
@@ -2017,7 +2017,7 @@ describe("Sidekick SQLite store", () => {
 
     const upgraded = await openSidekickStore(path, later);
     openStores.push(upgraded.store);
-    expect(upgraded.store.databaseStatus().schemaVersion).toBe(43);
+    expect(upgraded.store.databaseStatus().schemaVersion).toBe(44);
 
     const inspection = new DatabaseSync(path, { readOnly: true });
     const job = inspection

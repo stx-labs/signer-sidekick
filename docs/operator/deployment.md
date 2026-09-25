@@ -173,20 +173,20 @@ reverse_proxy 127.0.0.1:3998 {
 }
 ```
 
-Set `SIDEKICK_AUTH_BASIC_USERNAME` to use the token as an HTTP Basic password. Keep mainnet in the
-default `observe` engine mode.
+Set `SIDEKICK_AUTH_BASIC_USERNAME` to use the token as an HTTP Basic password. Initial setup uses
+the default `observe` engine mode; enable signing separately below.
 
 ## Gas wallet and reward runs
 
 Sidekick can run the permissionless PoX-5 reward calls — calculate, collect, distribute, settle,
-reclaim — from one operator-approved recipe at a time. Those calls need a key that pays network
+reclaim — from one approved recipe at a time. Those calls need a key that pays network
 fees, and Sidekick must never hold the signer or manager-admin key, so it generates a dedicated
-**gas wallet**: a low-balance STX account that signs only the sealed recipe you approve. The
+**gas wallet**: a low-balance STX account that signs only approved sealed recipes. The
 contract fixes every payout recipient and amount; the wallet's whole exposure is its balance. Keys
 are never accepted through the environment, and Observe remains the default.
 
 1. Set `SIDEKICK_ENGINE_MODE=operator-run` in `.env` and restart.
-2. Open **Settings → Gas wallet → Create gas wallet**. The key is written once to
+2. Open **Settings → Reward runs → Create gas wallet**. The key is written once to
    `/data/gas-wallet.key` (owner-only), is never exposed through the UI or API, and Settings shows
    only the address.
 3. Fund the address with STX from any wallet. For every transaction Sidekick asks the local node
@@ -197,6 +197,10 @@ are never accepted through the environment, and Observe remains the default.
    can require later settlement/reclaim calls.
 4. **Enable**. Before every signature Sidekick re-checks that the address is not the signer, a
    manager admin, or a contract, and refuses otherwise.
+
+Reward runs are manual by default. Optionally enable
+[automatic reward runs](operations.md#automatic-reward-runs) in Settings after verifying the
+deployment and fee limits. Enabling the gas wallet alone does not enable the schedule.
 
 Back up `gas-wallet.key` with the database (see Operations); losing it loses only the gas balance.
 **Sweep remaining STX** returns the balance to an address you name. **Disable**, **Force Observe**

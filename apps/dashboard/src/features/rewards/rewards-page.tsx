@@ -21,6 +21,7 @@ import {
   dismissGasWalletBanner,
   loadGasWalletStatus,
 } from "../settings/gas-wallet-api.js";
+import { RewardScheduleIndicator } from "../settings/reward-schedule-settings.js";
 import { RewardFeeLedger } from "./reward-accounting.js";
 import { rewardManagerCapabilityId } from "./reward-action-capabilities.js";
 import { GasWalletBanners } from "./reward-banners.js";
@@ -700,6 +701,7 @@ export function Rewards({
   return (
     <>
       <PageHead title="Rewards" />
+      <RewardScheduleIndicator token={token} />
       {ledger && ledgerError ? (
         <div className="callout callout-caution content-notice" role="status">
           Showing the last reward ledger from {new Date(ledger.generatedAt).toLocaleString()}.

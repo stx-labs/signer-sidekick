@@ -210,6 +210,9 @@ The source-state mappings include:
 
 Legacy engine records remain readable; they grant no new execution authority. Terminal runs have
 no actionable deadline; original approval/runtime limits remain in their timeline.
+Reward-run detail distinguishes manual from scheduled initiation using persisted scheduler
+provenance. Both retain the same transaction evidence and recovery controls; scheduled does not
+mean automatically resumed after a halt.
 
 An expired intent is always a terminal historical fact. Whether the underlying operation is
 currently due is evaluated by the ordinary current readiness projection, which may emit a separate

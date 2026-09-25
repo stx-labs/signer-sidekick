@@ -21,7 +21,8 @@ Sidekick supports STX-only positions and the STX side of Bitcoin bonds. Manager 
 remain in the operator's wallet and signer. Any PoX-5-compatible manager receives
 [core monitoring](docs/operator/deployment.md#manager-compatibility); manager operations are enabled
 individually through reviewed capability adapters. Optional reward runs use a separate, low-balance
-gas wallet and one operator-approved recipe at a time.
+gas wallet and one approved recipe at a time, manually or through an
+[opt-in schedule](docs/operator/operations.md#automatic-reward-runs).
 
 ## Development
 

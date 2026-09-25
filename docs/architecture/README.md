@@ -31,3 +31,4 @@ deploy contracts, manage infrastructure, or provide a public staker interface.
 | [0008](decisions/0008-chain-evidence-and-reconciliation.md) | Node-authoritative event reconciliation |
 | [0009](decisions/0009-evidence-first-reward-distribution.md) | Evidence-first reward distribution and settlement |
 | [0010](decisions/0010-operator-run-execution-envelope.md) | Operator-run execution envelope |
+| [0011](decisions/0011-scheduled-reward-runs.md) | Opt-in scheduler using the existing reward-run engine |

@@ -5,8 +5,9 @@ Sidekick, not the Stacks node or signer.
 
 ## Upgrade
 
-1. Review the target release notes. Finish or pause reward work at a transaction boundary and record
-   unresolved transaction IDs. Do not approve new work during the upgrade.
+1. Review the target release notes. Disable automatic reward starts if enabled. Finish or pause
+   reward work at a transaction boundary and record unresolved transaction IDs. Do not approve new
+   work during the upgrade.
 2. Back up with the **current image and configuration**, before selecting the new version:
 
 ```sh
@@ -46,14 +47,12 @@ curl --fail http://127.0.0.1:3998/health/operational
 
 4. Retry the operational probe while startup is pending, then check build identity, history,
    submitted work and background freshness. Do not mistake container health for indexing completion.
+   Re-enable automatic reward runs only after these checks pass.
 
-Migration 40 records run/sweep execution sources and preserves legacy halted-run diagnostics.
-Schema 41 adds ten Activity/observer indexes; schema 42 indexes settings revisions. Schema 43 adds
-snapshot retention metadata and history-read indexes. These migrations do not delete or rewrite
-financial rows. File-backed upgrades take an automatic pre-migration backup. Older binaries refuse
-newer schemas; rollback needs the
-compatible database, not just the old image. Never restore over newer submissions without reconciling
-them first.
+Schema 44 adds the reward schedule and initiation provenance without rewriting financial rows;
+upgrading does not enable it. File-backed upgrades take an automatic pre-migration backup. Older
+binaries refuse newer schemas: rollback needs the compatible database, not just the old image.
+Never restore over newer submissions without reconciling them first.
 
 ## Restore
 
@@ -93,7 +92,8 @@ docker compose up -d --no-deps sidekick
 )
 ```
 
-Check identity, history and every unresolved transaction before re-enabling operator-run. Preserve
+Disable any restored reward schedule, then check identity, history and every unresolved transaction
+before re-enabling operator-run. Preserve
 the quarantined data until reconciliation is complete. Never run two services against one store
 or enable signing on a copied production database.
 
@@ -172,6 +172,38 @@ signs a replacement. Preserve the database and gas-wallet key across restart.
 Typed transient read failures wait within the original deadline. Positive conflicts, hard refusals
 and ambiguous submission halt. **Settings → Reward runs → Force Observe** or gas-wallet Disable
 stop signing, not observation. Future work still requires fresh anchored node checks and approval.
+
+### Automatic reward runs
+
+After [enabling the gas wallet](deployment.md#gas-wallet-and-reward-runs), open **Settings → Reward
+runs → Automatic reward runs**, set **Check interval**, and choose **Enable automatic runs**.
+It is off by default. Enabling authorizes the same calculate, collect, distribute and Finish Bitcoin
+payouts recipes as the manual buttons, including future eligible stakers and subsequent chunks.
+Manager/admin actions, withdrawals of your fees, gas-wallet funding and sweeps remain manual.
+
+The interval is an idle-work check (15 minutes by default; 1–1,440 allowed), not a transaction rate
+or spending cap. Enabling checks immediately; a completed run can trigger the next action without
+waiting for the interval. Current gas-wallet fee limits apply to each recipe, with **no aggregate
+spending budget**. Fund only the STX you are willing to spend on fees.
+
+No browser is needed. A normal restart retains the schedule and follows the same preparation/run;
+manual preparations are never automatically approved. Settings shows the last check, reason, next
+check and active run link. Rewards links to that status; Activity records scheduled initiation.
+
+| Status | What to do |
+| --- | --- |
+| Waiting | Read the reason: no eligible work, unavailable prerequisites, or another run/sweep. Checks continue. A waiting calculation or Bitcoin confirmation is not yet eligible work. |
+| Preparing / running | Follow the run's progress and transaction evidence in Activity. |
+| Needs attention | Scheduling is off. Review the linked preparation/run or changed deployment identity, resolve it, then explicitly re-enable. |
+
+A paused, halted, expired or cancelled **scheduled** run stops further scheduling. It is never
+automatically resumed or replaced. Unresolved signed attempts from expired/cancelled **manual**
+runs also block new scheduled work even after their wallet lease is released; cancelling does not
+clear transaction uncertainty.
+
+**Disable schedule** stops new approvals, but approval already begun and approved runs may continue.
+It does not pause the engine. **Force Observe** or gas-wallet **Disable** stops new signatures;
+neither undoes a broadcast. Schedule status and Disable remain available during a node outage.
 
 ## Transaction observation
 

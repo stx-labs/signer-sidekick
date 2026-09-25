@@ -9,6 +9,10 @@ import type {
   RewardRunOperation,
 } from "@stx-labs/signer-sidekick-api-contracts";
 import {
+  pendingRewardDistributions,
+  rewardDistributionActions,
+} from "@stx-labs/signer-sidekick-api-contracts";
+import {
   amount,
   amountParts,
   compactDuration,
@@ -17,7 +21,7 @@ import {
   shortUtc,
   stxAmount,
 } from "../../shared/format.js";
-import { IN_PROGRESS_RUN_STATUSES, operationsForKind, type RewardRunKind } from "./run-api.js";
+import { IN_PROGRESS_RUN_STATUSES, type RewardRunKind } from "./run-api.js";
 
 /**
  * Pure derivations for the Rewards page (plan §6, v2 layout): the Earning card (orientation for
@@ -737,31 +741,7 @@ export function distributionKey(cycle: number, distribution: 1 | 2): string {
   return `${cycle}:${distribution}`;
 }
 
-const pendingStatuses: ReadonlySet<RewardLedgerDistribution["status"]> = new Set([
-  "interpretation-unavailable",
-  "needs-attention",
-  "calculation-overdue",
-  "ready",
-  "distributing",
-]);
-
-/** Distributions that still need the operator, oldest first. */
-export function pendingDistributions(
-  ledger: RewardLedger,
-): Array<{ cycle: RewardLedgerCycle; distribution: RewardLedgerDistribution }> {
-  return ledger.cycles
-    .flatMap((cycle) => cycle.distributions.map((distribution) => ({ cycle, distribution })))
-    .filter(
-      ({ distribution }) =>
-        pendingStatuses.has(distribution.status) ||
-        (distribution.status === "all-distributed" && distribution.payments.arriving > 0),
-    )
-    .sort(
-      (left, right) =>
-        left.cycle.cycle - right.cycle.cycle ||
-        left.distribution.distribution - right.distribution.distribution,
-    );
-}
+export const pendingDistributions = pendingRewardDistributions;
 
 export interface DistributeInput {
   ledger: RewardLedger;
@@ -780,7 +760,6 @@ export function deriveDistributionCards(input: DistributeInput): DistributionCar
       : null;
   return pendingDistributions(ledger).map(({ cycle, distribution }) => {
     const key = distributionKey(cycle.cycle, distribution.distribution);
-    const target = { cycle: cycle.cycle, distribution: distribution.distribution };
     const p = distribution.payments;
     const total = paymentTotal(distribution);
     const calculated = distribution.calculation.state === "done";
@@ -801,61 +780,17 @@ export function deriveDistributionCards(input: DistributeInput): DistributionCar
         ? `Queued behind Cycle ${activeRun.recipe.cycle} · ${distributionName(activeRun.recipe.distribution)} — one run at a time`
         : null;
 
-    // ---- actions ----
-    let primary: RewardPrimaryAction | null = null;
-    let secondary: DistributionCardModel["secondary"] = null;
-    if (distribution.status === "interpretation-unavailable") {
-      // Missing payment interpretation is not an empty work queue or permission to prepare.
-    } else if (distribution.status === "calculation-overdue") {
-      primary = {
-        kind: "calculate",
-        label: "Run calculation",
-        operations: operationsForKind("calculate"),
-        transactions: 1,
-        ...target,
-      };
-    } else if (rejected > 0 || arrived > 0) {
-      const action: RewardPrimaryAction = {
-        kind: "finish-bitcoin-payouts",
-        label: "Finish Bitcoin payouts",
-        operations: operationsForKind("finish-bitcoin-payouts"),
-        transactions: rejected + arrived,
-        ...target,
-      };
-      if (rejected > 0) primary = action;
-      else
-        secondary = {
-          action,
+    const { primary, finish } = rewardDistributionActions(
+      cycle.cycle,
+      distribution,
+      runForThis !== null,
+    );
+    const secondary: DistributionCardModel["secondary"] = finish
+      ? {
+          action: finish,
           tooltip: `Retire ${plural(arrived, "settled payout")} — nothing moves. A rejected payout would return sBTC to the staker.`,
-        };
-    }
-    if (primary === null && calculated && distribution.status !== "interpretation-unavailable") {
-      if (available > 0n && p.outstanding > 0) {
-        primary = {
-          kind: "collect-and-distribute",
-          label: "Collect & distribute",
-          operations: operationsForKind("collect-and-distribute"),
-          transactions: 1 + p.outstanding,
-          ...target,
-        };
-      } else if (available > 0n) {
-        primary = {
-          kind: "collect",
-          label: "Collect",
-          operations: operationsForKind("collect"),
-          transactions: 1,
-          ...target,
-        };
-      } else if (p.outstanding > 0 && runForThis === null) {
-        primary = {
-          kind: "distribute",
-          label: `Distribute ${plural(p.outstanding, "payment")}`,
-          operations: operationsForKind("distribute"),
-          transactions: p.outstanding,
-          ...target,
-        };
-      }
-    }
+        }
+      : null;
     const neededTransactions = primary?.transactions ?? secondary?.action.transactions ?? 1;
     const executionState = execution(gasWallet, engineMode, Math.max(neededTransactions, 1));
 

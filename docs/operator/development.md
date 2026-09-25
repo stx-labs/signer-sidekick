@@ -61,6 +61,8 @@ Implementation boundaries:
   `packages/protocol/src/reward-operation-plan.ts`;
 - recipes, run state, signing, submission, observation, and recovery live under
   `apps/sidekick/src/transaction-engine`;
+- automatic approval lives in `apps/sidekick/src/reward-schedule.ts`; shared button/scheduler action
+  selection lives in `packages/api-contracts/src/reward-actions.ts`. Keep scheduling outside the engine;
 - strict browser-facing schemas live in `packages/api-contracts`;
 - gas-wallet lifecycle lives in Settings; reward-run approval and recovery live in Rewards and
   Activity.
@@ -70,6 +72,7 @@ useful while iterating:
 
 ```sh
 pnpm --filter @stx-labs/signer-sidekick test src/transaction-engine
+pnpm --filter @stx-labs/signer-sidekick test src/reward-schedule
 pnpm --filter @stx-labs/signer-sidekick-api-contracts test
 pnpm --filter @stx-labs/signer-sidekick-dashboard test
 ```
@@ -105,6 +108,13 @@ canonical block anchor to become node-verified, and waits for the affected curre
 manager-activity projections to reconcile. The harness enables Core's transaction index as a
 verification optimization; production also supports canonical block reads. The version locks under
 `test/e2e/devnet` define the released artifacts.
+
+For scheduler changes, test with automation enabled and no manual preparation/approval: calculate,
+collect, multiple payout chunks, Bitcoin acceptance/rejection and finalization, and restart.
+A fixture that pre-calculates rewards tests downstream automation, not automatic calculation.
+Calculation waits for both ten minutes and 24 canonical Stacks blocks after first observed
+eligibility; accelerated cycles alone do not satisfy that grace. Allow roster refresh (30 minutes)
+before asserting newly eligible membership. Record which scenarios actually ran in the PR.
 
 ## Local dashboard
 
